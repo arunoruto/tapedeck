@@ -12,7 +12,17 @@ fn http() -> reqwest::Client {
 #[ignore = "needs network"]
 async fn listenbrainz_created_for_and_tracks() {
     let lb = ListenBrainz::new(http(), None);
-    let playlists = lb.created_for("rob").await.unwrap();
+    // ListenBrainz occasionally answers with a truncated body; one retry keeps CI honest
+    // about real breakage without failing on the API's hiccups.
+    let mut playlists = lb.created_for("rob").await;
+    for _ in 0..2 {
+        if playlists.is_ok() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        playlists = lb.created_for("rob").await;
+    }
+    let playlists = playlists.unwrap();
     let weekly = playlists.iter().find(|p| p.kind == "weekly-jams").expect("rob has weekly jams");
     let tracks = lb.tracks(&weekly.mbid).await.unwrap();
     assert!(!tracks.is_empty());
