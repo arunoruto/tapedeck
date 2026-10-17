@@ -179,6 +179,13 @@ fn pick_search_hit(v: &Value, artist: &str, title: &str, length_ms: Option<i64>)
         let exact = norm(r["title"].as_str().unwrap_or("")) == want_title;
         (!exact, releases.is_empty(), !on_official, drift, -(releases.len() as i64))
     })?;
+    // A different cut is not a match, however well the name fits: a 4:07 radio edit must not
+    // become the 6:09 album take. 20 s, the same rule the downloader applies.
+    if let (Some(want), Some(got)) = (length_ms, best["length"].as_i64())
+        && (want - got).abs() > 20_000
+    {
+        return None;
+    }
     best["id"].as_str().map(str::to_owned)
 }
 
@@ -187,7 +194,7 @@ pub fn parse_recording(v: &Value, mbid: &str) -> Result<Recording> {
     let releases = v["releases"].as_array().cloned().unwrap_or_default();
     let release = releases.iter().min_by_key(|r| release_rank(r, &artist_mbid)).cloned().unwrap_or(Value::Null);
     let (album_artist, album_artist_mbid) = match &release["artist-credit"] {
-        Value::Array(a) if !a.is_empty() => canonical_credit(&release["artist-credit"]),
+        Value::Array(a) if !a.is_empty() => credit(&release["artist-credit"]),
         _ => (artist.clone(), artist_mbid.clone()),
     };
     let year = release["date"].as_str().and_then(|d| d.get(..4)).and_then(|y| y.parse().ok());
@@ -218,12 +225,10 @@ fn credit(v: &Value) -> (String, String) {
     credit_with(v, |c| c["name"].as_str())
 }
 
-/// Same, but with each artist's canonical name instead of the credited spelling, so a Japanese
-/// edition credited to "ザ・チェインスモーカーズ" still files under "The Chainsmokers".
-fn canonical_credit(v: &Value) -> (String, String) {
-    credit_with(v, |c| c["artist"]["name"].as_str().or(c["name"].as_str()))
-}
-
+// The album artist is the name as credited on the chosen release, not the artist entity's
+// current name: MusicBrainz renames entities (Miley Cyrus is "MILEY" since 2026) and that would
+// re-file a whole back catalogue. Odd-script credits ("ザ・チェインスモーカーズ") sit on regional
+// editions, which `release_rank` already avoids.
 fn credit_with(v: &Value, name: impl Fn(&Value) -> Option<&str>) -> (String, String) {
     let credits = v.as_array().cloned().unwrap_or_default();
     let name = credits
@@ -306,7 +311,7 @@ mod tests {
         ]);
         let r = parse_recording(&v, "rec").unwrap();
         assert_eq!(r.album_mbid, "pablo-honey", "earlier Japan edition loses to the plain album");
-        assert_eq!(r.album_artist, "radiohead", "canonical artist name, not the credited spelling");
+        assert_eq!(r.album_artist, "credited-as", "as credited on the chosen release, not the entity's current name");
         assert_eq!((r.year, r.track_no, r.length_ms), (Some(1993), Some(7), Some(238000)));
         assert_eq!(r.artist_mbid.as_deref(), Some("radiohead"));
     }
@@ -335,7 +340,7 @@ mod tests {
         });
         let r = parse_recording(&v, "rec").unwrap();
         assert_eq!(r.artist, "Bonobo feat. Nicole Miglis");
-        assert_eq!((r.album_artist.as_str(), r.album_artist_mbid.as_str()), ("bonobo-id", "bonobo-id"));
+        assert_eq!((r.album_artist.as_str(), r.album_artist_mbid.as_str()), ("credited-as", "bonobo-id"));
     }
 
     #[test]
@@ -380,6 +385,7 @@ mod tests {
              "releases": [{"title": "X", "status": "Official", "release-group": {"primary-type": "Single"}}]}
         ]});
         assert_eq!(pick_search_hit(&pool, "Queen", "Old Town Road", Some(113000)).as_deref(), Some("single"));
+        assert_eq!(pick_search_hit(&pool, "Queen", "Old Town Road", Some(250000)), None, "2 min off: no match");
         assert_eq!(strip_feat("APT. (feat. Bruno Mars)"), "APT.");
         assert_eq!(strip_feat("Blame feat. John Newman"), "Blame");
         assert_eq!(strip_feat("Live and Let Die"), "Live and Let Die");

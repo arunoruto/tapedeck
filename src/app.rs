@@ -172,6 +172,13 @@ impl App {
                     if self.db().tracks_with_path(rel)?.len() > 1 {
                         info(tx, format!("another track still uses {rel}; the file stays")).await?;
                     } else {
+                        let refs = backup_references(
+                            &self.config.playlist_dir().join("backup"),
+                            &self.config.library.join(rel),
+                        );
+                        if refs > 0 {
+                            info(tx, format!("{refs} playlist backups reference this file and will dangle")).await?;
+                        }
                         library::remove_track(&self.config.library, Path::new(rel))?;
                     }
                 }
@@ -205,6 +212,8 @@ impl App {
                         library::move_track(&cfg.library, Path::new(old_rel), &new_rel)?;
                         self.db().set_path(track, &new_rel.to_string_lossy())?;
                         info(tx, format!("moved {old_rel} → {}", new_rel.display())).await?;
+                        let moves = HashMap::from([(cfg.library.join(old_rel), cfg.library.join(&new_rel))]);
+                        self.follow_moves(&moves, tx).await?;
                     }
                     let fresh = self.db().track_by_id(track)?.context("track vanished")?;
                     library::tag(&cfg.library.join(fresh.path.as_deref().unwrap_or(old_rel)), &fresh)?;
@@ -227,7 +236,8 @@ impl App {
         let cfg = &self.config;
         let tracks = self.db().all_tracks()?;
         let total = tracks.len();
-        let (mut moved, mut failed) = (0, 0);
+        let (mut moved, mut retagged, mut failed) = (0, 0, 0);
+        let mut moves: HashMap<PathBuf, PathBuf> = HashMap::new();
         for (i, t) in tracks.iter().enumerate() {
             progress(tx, format!("checking {}/{total}: {} - {}", i + 1, t.artist, t.title)).await?;
             let r = match self.mb.recording(&t.recording_mbid).await {
@@ -263,10 +273,12 @@ impl App {
                 if !dry_run {
                     library::move_track(&cfg.library, Path::new(old_rel), &new_rel)?;
                     self.db().set_path(t.id, &new_rel.to_string_lossy())?;
+                    moves.insert(cfg.library.join(old_rel), cfg.library.join(&new_rel));
                 }
             }
             if !dry_run {
                 library::tag(&cfg.library.join(&new_rel), &fresh)?;
+                retagged += 1;
             }
         }
         if !dry_run {
@@ -274,7 +286,9 @@ impl App {
             self.rewrite_m3us(None)?;
         }
         let verb = if dry_run { "would move" } else { "moved" };
-        info(tx, format!("{total} tracks checked, {moved} {verb}, {failed} failed")).await?;
+        self.follow_moves(&moves, tx).await?;
+        let retag = if dry_run { String::new() } else { format!(", {retagged} retagged") };
+        info(tx, format!("{total} tracks checked, {moved} {verb}{retag}, {failed} failed")).await?;
         ensure!(failed == 0, "{failed} MusicBrainz lookups failed; run again later");
         Ok(())
     }
@@ -524,14 +538,14 @@ impl App {
         // recording's length is filed and the others are duplicates.
         let (mut imported, mut duplicates, mut failed) = (0, 0, 0);
         let mut moved: HashMap<PathBuf, PathBuf> = HashMap::new();
-        for (mbid, files) in groups {
-            let existing = self.db().track_by_mbid(&mbid)?;
+        for (mut mbid, files) in groups {
+            let mut existing = self.db().track_by_mbid(&mbid)?;
             let (kept, label, dest) = match existing {
                 Some(t) if t.status == "ready" => {
                     (None, format!("{} - {}", t.artist, t.title), t.path.map(|p| cfg.library.join(p)))
                 }
                 _ => {
-                    let r = match self.mb.recording(&mbid).await {
+                    let mut r = match self.mb.recording(&mbid).await {
                         Ok(r) => r,
                         Err(e) => {
                             for f in &files {
@@ -541,11 +555,82 @@ impl App {
                             continue;
                         }
                     };
-                    let drift = |f: &&&library::Found| match (f.duration_ms, r.length_ms) {
-                        (Some(a), Some(b)) => (a - b).abs(),
-                        _ => i64::MAX,
+                    let closest = |r: &Recording| {
+                        *files
+                            .iter()
+                            .min_by_key(|f| match (f.duration_ms, r.length_ms) {
+                                (Some(a), Some(b)) => (a - b).abs(),
+                                _ => i64::MAX,
+                            })
+                            .expect("group has a file")
                     };
-                    let best = *files.iter().min_by_key(drift).expect("group has a file");
+                    let mut best = closest(&r);
+                    // A tag can name the wrong cut (a 4:07 file tagged as the 6:09 album take).
+                    // More than 20 s apart: ask the search for the file's own length instead.
+                    if let (Some(a), Some(b)) = (best.duration_ms, r.length_ms)
+                        && (a - b).abs() > 20_000
+                    {
+                        info(
+                            tx,
+                            format!(
+                                "length mismatch: {} is {}s, recording \"{}\" is {}s; searching by length",
+                                best.path.display(),
+                                a / 1000,
+                                r.title,
+                                b / 1000
+                            ),
+                        )
+                        .await?;
+                        let again = self.mb.search_recording(&best.artist, &best.title, best.duration_ms).await;
+                        match again {
+                            Ok(Some(m)) if m != mbid => match self.mb.recording(&m).await {
+                                Ok(r2) => {
+                                    mbid = m;
+                                    r = r2;
+                                    best = closest(&r);
+                                    existing = self.db().track_by_mbid(&mbid)?;
+                                }
+                                Err(e) => {
+                                    for f in &files {
+                                        info(tx, format!("lookup failed: {}: {e:#}", f.path.display())).await?;
+                                    }
+                                    lookup_failed += files.len();
+                                    continue;
+                                }
+                            },
+                            Err(e) => {
+                                for f in &files {
+                                    info(tx, format!("lookup failed: {}: {e:#}", f.path.display())).await?;
+                                }
+                                lookup_failed += files.len();
+                                continue;
+                            }
+                            _ => {
+                                for f in &files {
+                                    info(tx, format!("no match (length): {}", f.path.display())).await?;
+                                }
+                                unresolved += files.len();
+                                continue;
+                            }
+                        }
+                        // The re-resolved recording may already be in the library.
+                        if let Some(t) = &existing
+                            && t.status == "ready"
+                        {
+                            let label = format!("{} - {}", t.artist, t.title);
+                            let dest = t.path.clone().map(|p| cfg.library.join(p));
+                            for f in &files {
+                                duplicates += 1;
+                                if let Some(d) = &dest
+                                    && apply
+                                {
+                                    moved.insert(f.path.clone(), d.clone());
+                                }
+                                info(tx, format!("duplicate of {label}: {}", f.path.display())).await?;
+                            }
+                            continue;
+                        }
+                    }
                     info(tx, format!("{verb}: {} → {} - {} [{}]", best.path.display(), r.artist, r.title, r.album))
                         .await?;
                     let mut dest = None;
@@ -913,6 +998,18 @@ impl App {
         self.config.sync.playlist_title.replace("{name}", &display_name(kind)).replace("{kind}", kind)
     }
 
+    /// Point playlist backups at files that just moved, whoever moved them.
+    async fn follow_moves(&self, moves: &HashMap<PathBuf, PathBuf>, tx: &Sender<Event>) -> Result<()> {
+        if moves.is_empty() {
+            return Ok(());
+        }
+        let n = rewrite_backups(&self.config.playlist_dir().join("backup"), moves)?;
+        if n > 0 {
+            info(tx, format!("updated {n} backup files to point at the moved tracks")).await?;
+        }
+        Ok(())
+    }
+
     /// Rewrite the m3u8 of every playlist (or of `only` those ids) at its stored path.
     fn rewrite_m3us(&self, only: Option<&[i64]>) -> Result<()> {
         let playlists = self.db().playlists()?;
@@ -1183,6 +1280,17 @@ fn rewrite_backups(dir: &Path, moved: &HashMap<PathBuf, PathBuf>) -> Result<usiz
         }
     }
     Ok(changed)
+}
+
+/// How many backup m3u8s under `dir` list `file`.
+fn backup_references(dir: &Path, file: &Path) -> usize {
+    let want = file.to_string_lossy();
+    backup_files(dir)
+        .unwrap_or_default()
+        .iter()
+        .filter(|p| p.extension().is_some_and(|e| e == "m3u8"))
+        .filter(|p| std::fs::read_to_string(p).is_ok_and(|b| b.lines().any(|l| l == want)))
+        .count()
 }
 
 /// Every backup m3u8/json under `dir`, minus smart playlists (their JSON says `"smart": true`,

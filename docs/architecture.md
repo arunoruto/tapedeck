@@ -106,13 +106,17 @@ of an hour.
 
 `td retag ID --recording MBID` is the manual override for a wrong match: the row becomes that
 recording, metadata is refetched, the file retagged and moved if its templated path changed, and
-its playlists' m3u8s rewritten. In the TUI it is `m` on a track. `td refile` cannot do this, it
+its playlists' m3u8s rewritten, and playlist backups follow the moved file, as they do after
+`td refile` moves. In the TUI it is `m` on a track. `td refile` cannot do this, it
 re-resolves the recording id the row already has.
 
 `td import DIR` is for a folder that predates tapedeck. Each audio file is identified by its
 `MUSICBRAINZ_TRACKID` tag when present, otherwise by a MusicBrainz search on artist and
 title (from tags, else from an `Artist - Title` file name) scored by how close the file's
-length is to the recording's. A file the search cannot place still joins the group of a
+length is to the recording's. A resolved recording more than 20 s away from the file's
+own length is not accepted, whether the tag or the search named it: the search is asked again
+for the file's length, and if that finds nothing the file is a miss rather than a wrong cut.
+A file the search cannot place still joins the group of a
 resolved file with the same artist, title and length, which is how an untagged copy of a tagged
 file finds its recording. Files are then grouped by recording, because Explo drops the same
 song into every weekly folder it appears in. A recording the library already has makes
@@ -244,7 +248,9 @@ machine-readable dump when needed.
 
 **Track artist and album artist are stored separately.** `tracks.artist` is the
 recording's credit (`Bonobo feat. Nicole Miglis`); `artists` holds the release's credit
-(`Bonobo`) and is what albums hang off. Filing by `{album_artist}` keeps an album in one
+(`Bonobo`) and is what albums hang off. The album artist is the name as credited on the
+chosen release, not the artist entity's current name: MusicBrainz renames entities (Miley
+Cyrus became "MILEY" in 2026) and following that would re-file a whole back catalogue. Filing by `{album_artist}` keeps an album in one
 folder even when half its tracks have guests.
 
 **Plex playlists are recreated, not diffed.** Deleting and recreating is a handful of
