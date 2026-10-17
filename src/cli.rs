@@ -150,6 +150,10 @@ pub enum RemoteCmd {
         /// Backup directory (default: <playlist_dir>/backup).
         #[arg(long)]
         dir: Option<PathBuf>,
+        /// Only entries under this folder (repeatable), e.g. the folder about to be deleted.
+        /// Without it, every entry outside the library is tried.
+        #[arg(long = "from")]
+        from: Vec<PathBuf>,
     },
     /// Recreate a playlist from a JSON file written by `backup`.
     Restore {

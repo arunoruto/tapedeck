@@ -300,9 +300,9 @@ impl App {
                     self.backup(target, &hits, &dir, tx).await?;
                 }
             }
-            RemoteCmd::Relink { dir } => {
+            RemoteCmd::Relink { dir, from } => {
                 let dir = dir.unwrap_or_else(|| self.config.playlist_dir().join("backup"));
-                let (map, unresolved) = self.relink_map(&dir)?;
+                let (map, unresolved) = self.relink_map(&dir, &from, tx).await?;
                 let n = rewrite_backups(&dir, &map)?;
                 info(tx, format!("{} paths relinked to the library in {n} backup files; {unresolved} outside paths have no library copy", map.len())).await?;
             }
@@ -605,57 +605,72 @@ impl App {
         Ok(())
     }
 
-    /// For `remote relink`: every path in the backups that is not under the library, mapped to
-    /// the library file of the same recording when the file's tag or a cached import lookup
-    /// names one. Returns the map and how many outside paths stay unresolved.
-    fn relink_map(&self, dir: &Path) -> Result<(HashMap<PathBuf, PathBuf>, usize)> {
+    /// For `remote relink`: every distinct path in the backups that is not under the library
+    /// (and under one of `from`, when given), mapped to the library file of the same recording.
+    /// One tag read per distinct file, against an in-memory index of the library; smart
+    /// playlists' backups are skipped, Plex regenerates those. Returns the map and how many
+    /// paths stay unresolved.
+    async fn relink_map(
+        &self,
+        dir: &Path,
+        from: &[PathBuf],
+        tx: &Sender<Event>,
+    ) -> Result<(HashMap<PathBuf, PathBuf>, usize)> {
         let library = &self.config.library;
         let mut outside: Vec<PathBuf> = vec![];
-        let mut stack = vec![dir.to_path_buf()];
-        while let Some(d) = stack.pop() {
-            let Ok(entries) = std::fs::read_dir(&d) else { continue };
-            for entry in entries.flatten() {
-                let p = entry.path();
-                if p.is_dir() {
-                    stack.push(p);
-                } else if p.extension().is_some_and(|e| e == "m3u8") {
-                    for line in std::fs::read_to_string(&p)?.lines() {
-                        if line.starts_with('/') && !Path::new(line).starts_with(library) {
-                            outside.push(PathBuf::from(line));
-                        }
-                    }
+        for p in backup_files(dir)?.into_iter().filter(|p| p.extension().is_some_and(|e| e == "m3u8")) {
+            for line in std::fs::read_to_string(&p)?.lines() {
+                let path = Path::new(line);
+                if line.starts_with('/')
+                    && !path.starts_with(library)
+                    && (from.is_empty() || from.iter().any(|f| path.starts_with(f)))
+                {
+                    outside.push(path.to_path_buf());
                 }
             }
         }
         outside.sort();
         outside.dedup();
+
+        // The library, indexed once: by recording id, and by name + length for untagged copies.
         let all = self.db().all_tracks()?;
+        let by_mbid: HashMap<&str, &str> =
+            all.iter().filter_map(|t| Some((t.recording_mbid.as_str(), t.path.as_deref()?))).collect();
+        let by_name: Vec<(String, String, i64, &str)> = all
+            .iter()
+            .filter_map(|t| {
+                Some((
+                    crate::musicbrainz::strip_feat(&t.artist).to_lowercase(),
+                    crate::musicbrainz::strip_feat(&t.title).to_lowercase(),
+                    t.duration_ms?,
+                    t.path.as_deref()?,
+                ))
+            })
+            .collect();
+
         let mut map = HashMap::new();
         let mut unresolved = 0;
-        for path in outside {
+        let total = outside.len();
+        for (i, path) in outside.into_iter().enumerate() {
+            progress(tx, format!("resolving {}/{total}: {}", i + 1, path.display())).await?;
             let found = library::inspect(&path);
             let mbid = match &found.recording_mbid {
                 Some(m) => Some(m.clone()),
                 None => self.db().cached_lookup(&path.to_string_lossy(), found.size, found.mtime)?,
             };
-            let by_id = mbid.and_then(|m| self.db().track_by_mbid(&m).ok().flatten());
-            // No tag and no cached lookup (a copy that import matched by name): same artist
-            // and title as a library track, same length within a few seconds.
-            let by_name = || {
+            let hit = mbid.as_deref().and_then(|m| by_mbid.get(m).copied()).or_else(|| {
                 // Credits differ in form ("Clean Bandit" vs "Clean Bandit feat. Demi Lovato"),
                 // so one artist string starting with the other is a match.
                 let (artist, title) = name_key(&found);
-                all.iter()
-                    .find(|t| {
-                        let a = crate::musicbrainz::strip_feat(&t.artist).to_lowercase();
-                        t.path.is_some()
-                            && (a.starts_with(&artist) || artist.starts_with(&a))
-                            && crate::musicbrainz::strip_feat(&t.title).to_lowercase() == title
-                            && matches!((t.duration_ms, found.duration_ms), (Some(x), Some(y)) if (x - y).abs() <= 5_000)
+                let len = found.duration_ms?;
+                by_name
+                    .iter()
+                    .find(|(a, t, ms, _)| {
+                        (a.starts_with(&artist) || artist.starts_with(a)) && *t == title && (ms - len).abs() <= 5_000
                     })
-                    .cloned()
-            };
-            match by_id.or_else(by_name).and_then(|t| t.path) {
+                    .map(|(_, _, _, p)| *p)
+            });
+            match hit {
                 Some(rel) => {
                     map.insert(path, library.join(rel));
                 }
@@ -1092,6 +1107,44 @@ fn name_key(f: &library::Found) -> (String, String) {
 /// files, so `td remote restore` keeps working after an import. Returns how many files changed.
 fn rewrite_backups(dir: &Path, moved: &HashMap<PathBuf, PathBuf>) -> Result<usize> {
     let mut changed = 0;
+    for p in backup_files(dir)? {
+        match p.extension().and_then(|e| e.to_str()) {
+            Some("m3u8") => {
+                let body = std::fs::read_to_string(&p)?;
+                let new: String = body
+                    .lines()
+                    .map(|l| moved.get(Path::new(l)).map(|n| n.to_string_lossy().into_owned()).unwrap_or(l.into()))
+                    .map(|l| l + "\n")
+                    .collect();
+                if new != body {
+                    write_atomic(&p, new.as_bytes())?;
+                    changed += 1;
+                }
+            }
+            Some("json") => {
+                let mut v: Value = serde_json::from_slice(&std::fs::read(&p)?)?;
+                let mut hit = false;
+                for item in v["items"].as_array_mut().into_iter().flatten() {
+                    if let Some(n) = item["file"].as_str().and_then(|f| moved.get(Path::new(f))) {
+                        item["file"] = json!(n);
+                        hit = true;
+                    }
+                }
+                if hit {
+                    write_atomic(&p, &serde_json::to_vec_pretty(&v)?)?;
+                    changed += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(changed)
+}
+
+/// Every backup m3u8/json under `dir`, minus smart playlists (their JSON says `"smart": true`,
+/// and the m3u8 beside it shares the stem): Plex regenerates those from a filter.
+fn backup_files(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut files = vec![];
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&d) else { continue };
@@ -1099,40 +1152,33 @@ fn rewrite_backups(dir: &Path, moved: &HashMap<PathBuf, PathBuf>) -> Result<usiz
             let p = entry?.path();
             if p.is_dir() {
                 stack.push(p);
-                continue;
-            }
-            match p.extension().and_then(|e| e.to_str()) {
-                Some("m3u8") => {
-                    let body = std::fs::read_to_string(&p)?;
-                    let new: String = body
-                        .lines()
-                        .map(|l| moved.get(Path::new(l)).map(|n| n.to_string_lossy().into_owned()).unwrap_or(l.into()))
-                        .map(|l| l + "\n")
-                        .collect();
-                    if new != body {
-                        std::fs::write(&p, new)?;
-                        changed += 1;
-                    }
-                }
-                Some("json") => {
-                    let mut v: Value = serde_json::from_slice(&std::fs::read(&p)?)?;
-                    let mut hit = false;
-                    for item in v["items"].as_array_mut().into_iter().flatten() {
-                        if let Some(n) = item["file"].as_str().and_then(|f| moved.get(Path::new(f))) {
-                            item["file"] = json!(n);
-                            hit = true;
-                        }
-                    }
-                    if hit {
-                        std::fs::write(&p, serde_json::to_vec_pretty(&v)?)?;
-                        changed += 1;
-                    }
-                }
-                _ => {}
+            } else if p.extension().is_some_and(|e| e == "m3u8" || e == "json") {
+                files.push(p);
             }
         }
     }
-    Ok(changed)
+    let smart: HashSet<PathBuf> = files
+        .iter()
+        .filter(|p| p.extension().is_some_and(|e| e == "json"))
+        .filter(|p| {
+            std::fs::read(p)
+                .ok()
+                .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+                .is_some_and(|v| v["smart"] == true)
+        })
+        .map(|p| p.with_extension(""))
+        .collect();
+    files.retain(|p| !smart.contains(&p.with_extension("")));
+    files.sort();
+    Ok(files)
+}
+
+/// Write via a temp file and rename, so an interrupted run never leaves a half-written backup.
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
+    Ok(())
 }
 
 fn new_track<'a>(recording_mbid: &'a str, r: &'a Recording) -> NewTrack<'a> {

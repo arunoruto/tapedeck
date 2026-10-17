@@ -139,10 +139,12 @@ from the targets only, backup first; nothing on disk changes. In the TUI these a
 on a playlist row, and a `✓ plex` mark shows which targets currently hold a playlist under
 that title.
 
-`td remote relink` is for the end of a migration: every backup entry that points outside
-the library is resolved to a library track, by the file's MusicBrainz tag, by the cached import
-lookup, or by artist, title and length, and rewritten. After that the imported folder can go
-without any backup dangling.
+`td remote relink --from DIR` is for the end of a migration: every distinct backup entry under
+`DIR` (or anywhere outside the library, without `--from`) is resolved to a library track, by
+the file's MusicBrainz tag, by the cached import lookup, or by artist, title and length against
+an index of the library built once, and rewritten. Smart playlists' backups are left alone.
+Backup files are replaced atomically. After that the imported folder can go without any
+backup dangling.
 
 `td remote ls` and `td remote rm GLOB` talk to the sync targets' own playlist lists, so the
 history another tool left behind (`Weekly-Jams-2026-Week*`) can be cleared without opening
