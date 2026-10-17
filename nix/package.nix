@@ -1,4 +1,4 @@
-{ lib, rustPlatform, makeWrapper, versionCheckHook, nix-update-script, yt-dlp, ffmpeg }:
+{ lib, rustPlatform, makeWrapper, cacert, versionCheckHook, nix-update-script, yt-dlp, ffmpeg }:
 
 rustPlatform.buildRustPackage (finalAttrs: {
   pname = "tapedeck";
@@ -14,6 +14,9 @@ rustPlatform.buildRustPackage (finalAttrs: {
 
   # Tests that need the network are #[ignore]d in the source and therefore skipped here.
   # The remaining suite covers parsing, the database, templating and the CLI.
+  # The CLI tests start `td`, which builds its HTTPS client eagerly; rustls refuses to start
+  # without a CA store, and the Linux sandbox has none, so hand it cacert's bundle.
+  nativeCheckInputs = [ cacert ];
 
   # yt-dlp needs ffmpeg for audio extraction; put both on td's PATH.
   postInstall = ''
