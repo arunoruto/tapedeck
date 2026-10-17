@@ -158,7 +158,9 @@ plus the last lines of whatever action is running. Colours come from a `Theme` (
 flavours compiled in and user files under `<config dir>/themes/` taking precedence, selected by
 `theme` in the config. The TUI never sets a background, so it sits on whatever the terminal
 has. The header is a four-line cassette drawn from the theme's stripe colours, with the tabs and
-the library's size beside it. Keys follow vim and less: `hjkl`, `^D`/`^U`
+the library's size beside it. `assets/demo.tape` is a [vhs](https://github.com/charmbracelet/vhs)
+script that records the README's GIF and three PNGs against a scratch config: run
+`TAPEDECK_CONFIG=... vhs assets/demo.tape` with `td` on `PATH`. Keys follow vim and less: `hjkl`, `^D`/`^U`
 half page, `^F`/`^B` page, `g`/`G`, `Tab`, `[`/`]` or `1`/`2` for tabs. `i` (or `Enter` on a
 track) opens a popup with the tags, what is on disk (format, bitrate, sample rate, length, size,
 read from the file's header on the spot, so it reflects the real download), the source URL, and

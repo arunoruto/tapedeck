@@ -185,6 +185,18 @@ Everything else has a default. The full reference is in
 Output is a table or plain lines; add `--json` to any command for newline-delimited JSON
 events instead, which is what scripts and agents should parse.
 
+### The TUI
+
+Plain `td` opens it. Left to right: artists, albums, songs; `]` switches to the playlists,
+local and remote. Every action asks before it touches anything.
+
+<p align="center"><img src="assets/tui.gif" alt="td browsing the library and the playlists" width="900"></p>
+
+Colours come from a theme: Catppuccin Mocha by default, Latte built in for light terminals,
+and your own as a TOML file under `themes/` next to the config (see
+[docs/configuration.md](docs/configuration.md#themes)). The recording above is made with
+[vhs](https://github.com/charmbracelet/vhs) from `assets/demo.tape`.
+
 After a sync the library looks like this:
 
 ```
