@@ -1,6 +1,9 @@
 //! The one place commands are executed, whether invoked locally or through the daemon.
 
-use std::{path::PathBuf, sync::Mutex};
+use std::{
+    path::{Path, PathBuf},
+    sync::Mutex,
+};
 
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
@@ -8,13 +11,13 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc::Sender;
 
 use crate::{
-    cli::Command,
+    cli::{Command, RemoteCmd},
     config::Config,
-    db::{Db, NewTrack, Playlist},
+    db::{Db, NewTrack, Playlist, Track},
     download::{self, Downloader},
     library, listenbrainz, m3u,
-    musicbrainz::MusicBrainz,
-    sync::{self, SyncTarget},
+    musicbrainz::{MusicBrainz, Recording},
+    sync::{self, SyncTarget, glob_match},
 };
 
 /// Streamed back to whoever invoked a command. `--json` prints these verbatim.
@@ -90,7 +93,189 @@ impl App {
                 ensure!(self.db().set_source_url(track, &url)?, "no track with id {track}");
                 info(tx, format!("track {track} queued for download from {url}")).await
             }
+            Command::Refile { dry_run } => self.refile(dry_run, tx).await,
+            Command::Remote { action } => self.remote(action, tx).await,
+            Command::Import { dir, apply, delete_duplicates } => self.import(&dir, apply, delete_duplicates, tx).await,
         }
+    }
+
+    /// Re-resolve every track against MusicBrainz (new ranking, new fields), then retag and
+    /// move files whose templated path changed.
+    async fn refile(&self, dry_run: bool, tx: &Sender<Event>) -> Result<()> {
+        let cfg = &self.config;
+        let tracks = self.db().all_tracks()?;
+        let total = tracks.len();
+        let (mut moved, mut failed) = (0, 0);
+        for (i, t) in tracks.iter().enumerate() {
+            info(tx, format!("checking {}/{total}: {} - {}", i + 1, t.artist, t.title)).await?;
+            let r = match self.mb.recording(&t.recording_mbid).await {
+                Ok(r) => r,
+                Err(e) => {
+                    info(tx, format!("skipping {} - {}: {e:#}", t.artist, t.title)).await?;
+                    failed += 1;
+                    continue;
+                }
+            };
+            if !dry_run {
+                self.db().insert_track(&new_track(&t.recording_mbid, &r))?;
+            }
+            let Some(old_rel) = &t.path else { continue };
+            // What the row looks like after the update, without a second query in dry-run mode.
+            let fresh = match dry_run {
+                true => Track {
+                    title: r.title.clone(),
+                    artist: r.artist.clone(),
+                    album_artist: r.album_artist.clone(),
+                    album: r.album.clone(),
+                    year: r.year,
+                    track_no: r.track_no,
+                    ..t.clone()
+                },
+                false => self.db().track_by_mbid(&t.recording_mbid)?.context("track vanished")?,
+            };
+            let ext = Path::new(old_rel).extension().and_then(|e| e.to_str()).unwrap_or("bin");
+            let new_rel = library::render_template(&cfg.path_template, &fresh, ext)?;
+            if new_rel != Path::new(old_rel) {
+                info(tx, format!("  {old_rel} → {}", new_rel.display())).await?;
+                moved += 1;
+                if !dry_run {
+                    library::move_track(&cfg.library, Path::new(old_rel), &new_rel)?;
+                    self.db().set_path(t.id, &new_rel.to_string_lossy())?;
+                }
+            }
+            if !dry_run {
+                library::tag(&cfg.library.join(&new_rel), &fresh)?;
+            }
+        }
+        if !dry_run {
+            // Paths inside the m3u8 files may have changed; regenerate every one we wrote.
+            let playlists = self.db().playlists()?;
+            for p in playlists {
+                let Some(m3u) = p.m3u_path.as_deref().map(Path::new) else { continue };
+                let (Some(dir), Some(stem)) = (m3u.parent(), m3u.file_stem().and_then(|s| s.to_str())) else {
+                    continue;
+                };
+                let tracks = self.db().playlist_tracks(p.id)?;
+                m3u::write(dir, &cfg.library, stem, &p.name, &tracks)?;
+            }
+        }
+        let verb = if dry_run { "would move" } else { "moved" };
+        info(tx, format!("{total} tracks checked, {moved} {verb}, {failed} failed")).await?;
+        ensure!(failed == 0, "{failed} MusicBrainz lookups failed; run again later");
+        Ok(())
+    }
+
+    async fn remote(&self, action: RemoteCmd, tx: &Sender<Event>) -> Result<()> {
+        match action {
+            RemoteCmd::Ls { to } => {
+                for target in self.targets(to.as_deref())? {
+                    let playlists = target.list_playlists().await?;
+                    data(tx, json!({ "target": target.name(), "playlists": playlists })).await?;
+                }
+            }
+            RemoteCmd::Rm { pattern, to, yes } => {
+                for target in self.targets(to.as_deref())? {
+                    let hits: Vec<_> =
+                        target.list_playlists().await?.into_iter().filter(|p| glob_match(&pattern, &p.title)).collect();
+                    if !yes {
+                        info(
+                            tx,
+                            format!(
+                                "{}: {} playlists match {pattern:?} (pass --yes to delete):",
+                                target.name(),
+                                hits.len()
+                            ),
+                        )
+                        .await?;
+                        for p in &hits {
+                            info(tx, format!("  {} ({} tracks)", p.title, p.tracks)).await?;
+                        }
+                        continue;
+                    }
+                    for p in &hits {
+                        target.delete_playlist(&p.id).await?;
+                        info(tx, format!("{}: deleted {} ({} tracks)", target.name(), p.title, p.tracks)).await?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Resolve files from elsewhere to recordings; file the new ones, report (or delete) the
+    /// ones the library already has.
+    async fn import(&self, dir: &Path, apply: bool, delete_duplicates: bool, tx: &Sender<Event>) -> Result<()> {
+        let cfg = &self.config;
+        let found = library::scan(dir)?;
+        info(tx, format!("{} audio files under {}", found.len(), dir.display())).await?;
+        let (mut imported, mut duplicates, mut unresolved) = (0, 0, 0);
+        for f in &found {
+            let mbid = match &f.recording_mbid {
+                Some(m) => m.clone(),
+                None => match self.mb.search_recording(&f.artist, &f.title, f.duration_ms).await {
+                    Ok(Some(m)) => m,
+                    Ok(None) => {
+                        info(tx, format!("no match: {}", f.path.display())).await?;
+                        unresolved += 1;
+                        continue;
+                    }
+                    Err(e) => {
+                        info(tx, format!("lookup failed: {}: {e:#}", f.path.display())).await?;
+                        unresolved += 1;
+                        continue;
+                    }
+                },
+            };
+            // Bind first: a guard inside an `if let` scrutinee would live across the awaits below.
+            let existing = self.db().track_by_mbid(&mbid)?;
+            if let Some(existing) = existing
+                && existing.status == "ready"
+            {
+                duplicates += 1;
+                if apply && delete_duplicates {
+                    std::fs::remove_file(&f.path)?;
+                    info(
+                        tx,
+                        format!("deleted duplicate of {} - {}: {}", existing.artist, existing.title, f.path.display()),
+                    )
+                    .await?;
+                } else {
+                    info(tx, format!("duplicate of {} - {}: {}", existing.artist, existing.title, f.path.display()))
+                        .await?;
+                }
+                continue;
+            }
+            let r = match self.mb.recording(&mbid).await {
+                Ok(r) => r,
+                Err(e) => {
+                    info(tx, format!("lookup failed: {}: {e:#}", f.path.display())).await?;
+                    unresolved += 1;
+                    continue;
+                }
+            };
+            info(tx, format!("import {} → {} - {} [{}]", f.path.display(), r.artist, r.title, r.album)).await?;
+            imported += 1;
+            if apply {
+                let id = self.db().insert_track(&new_track(&mbid, &r))?;
+                let t = self.db().track_by_mbid(&mbid)?.context("track vanished")?;
+                let rel = library::file_track(&cfg.library, &cfg.path_template, &t, &f.path)?;
+                self.db().mark_ready(id, &rel.to_string_lossy(), None)?;
+            }
+        }
+        let mode = if apply { "" } else { " (dry run; pass --apply to move files)" };
+        info(tx, format!("{imported} imported, {duplicates} duplicates, {unresolved} unresolved{mode}")).await?;
+        Ok(())
+    }
+
+    fn targets(&self, only: Option<&str>) -> Result<Vec<&dyn SyncTarget>> {
+        let v: Vec<&dyn SyncTarget> =
+            self.targets.iter().map(|t| t.as_ref()).filter(|t| only.is_none_or(|o| o == t.name())).collect();
+        ensure!(
+            !v.is_empty(),
+            "no sync target{} configured",
+            only.map(|o| format!(" named {o:?}")).unwrap_or_default()
+        );
+        Ok(v)
     }
 
     async fn sync(&self, only: Option<String>, no_push: bool, tx: &Sender<Event>) -> Result<()> {
@@ -120,19 +305,7 @@ impl App {
                                 continue;
                             }
                         };
-                        self.db().insert_track(&NewTrack {
-                            recording_mbid: &t.recording_mbid,
-                            title: &r.title,
-                            track_no: r.track_no,
-                            artist: &r.artist,
-                            album_artist_mbid: &r.album_artist_mbid,
-                            album_artist: &r.album_artist,
-                            album_mbid: &r.album_mbid,
-                            album: &r.album,
-                            year: r.year,
-                            artist_mbid: r.artist_mbid.as_deref(),
-                            duration_ms: r.length_ms,
-                        })?
+                        self.db().insert_track(&new_track(&t.recording_mbid, &r))?
                     }
                 };
                 ids.push(id);
@@ -208,6 +381,22 @@ impl App {
 
     fn db(&self) -> std::sync::MutexGuard<'_, Db> {
         self.db.lock().unwrap_or_else(|p| p.into_inner())
+    }
+}
+
+fn new_track<'a>(recording_mbid: &'a str, r: &'a Recording) -> NewTrack<'a> {
+    NewTrack {
+        recording_mbid,
+        title: &r.title,
+        track_no: r.track_no,
+        artist: &r.artist,
+        album_artist_mbid: &r.album_artist_mbid,
+        album_artist: &r.album_artist,
+        album_mbid: &r.album_mbid,
+        album: &r.album,
+        year: r.year,
+        artist_mbid: r.artist_mbid.as_deref(),
+        duration_ms: r.length_ms,
     }
 }
 

@@ -50,4 +50,43 @@ pub enum Command {
     Retry,
     /// Pin the download URL for a track (see `td search`) and queue it for the next sync.
     Source { track: i64, url: String },
+    /// Re-query MusicBrainz for every track, retag, and move files whose templated path changed.
+    Refile {
+        /// Report what would move without touching anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Playlists that live on a sync target (list, bulk delete).
+    Remote {
+        #[command(subcommand)]
+        action: RemoteCmd,
+    },
+    /// Bring an existing folder of music (e.g. Explo's downloads) into the library.
+    /// Dry run unless --apply; files are moved, not copied.
+    Import {
+        dir: PathBuf,
+        #[arg(long)]
+        apply: bool,
+        /// Delete files whose recording is already in the library (with --apply).
+        #[arg(long)]
+        delete_duplicates: bool,
+    },
+}
+
+#[derive(Subcommand, Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum RemoteCmd {
+    /// List playlists on the target(s).
+    Ls {
+        #[arg(long)]
+        to: Option<String>,
+    },
+    /// Delete playlists whose title matches a glob (`*`, `?`). Only lists them unless --yes.
+    Rm {
+        pattern: String,
+        #[arg(long)]
+        to: Option<String>,
+        #[arg(long)]
+        yes: bool,
+    },
 }

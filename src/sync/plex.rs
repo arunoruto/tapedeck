@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use reqwest::Client;
 use serde_json::Value;
 
-use super::SyncTarget;
+use super::{RemotePlaylist, SyncTarget};
 use crate::config;
 
 pub struct Plex {
@@ -119,12 +119,9 @@ impl Plex {
     }
 
     async fn delete_existing(&self, title: &str) -> Result<()> {
-        let v = self.get("/playlists?playlistType=audio").await?;
-        for p in v["MediaContainer"]["Metadata"].as_array().into_iter().flatten() {
-            if p["title"].as_str() == Some(title)
-                && let Some(rk) = p["ratingKey"].as_str()
-            {
-                self.call(reqwest::Method::DELETE, &format!("/playlists/{rk}")).await?;
+        for p in self.list_playlists().await? {
+            if p.title == title {
+                self.delete_playlist(&p.id).await?;
             }
         }
         Ok(())
@@ -135,6 +132,26 @@ impl Plex {
 impl SyncTarget for Plex {
     fn name(&self) -> &'static str {
         "plex"
+    }
+
+    async fn list_playlists(&self) -> Result<Vec<RemotePlaylist>> {
+        let v = self.get("/playlists?playlistType=audio").await?;
+        Ok(v["MediaContainer"]["Metadata"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|p| {
+                Some(RemotePlaylist {
+                    id: p["ratingKey"].as_str()?.to_string(),
+                    title: p["title"].as_str().unwrap_or("").to_string(),
+                    tracks: p["leafCount"].as_i64().unwrap_or(0),
+                })
+            })
+            .collect())
+    }
+
+    async fn delete_playlist(&self, id: &str) -> Result<()> {
+        self.call(reqwest::Method::DELETE, &format!("/playlists/{id}")).await.map(drop)
     }
 
     async fn sync_playlist(&self, title: &str, files: &[PathBuf]) -> Result<String> {

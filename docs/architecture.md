@@ -80,6 +80,26 @@ A sync target only sees a title and absolute paths. Jellyfin, Subsonic or an
 Backends are selected by name in `download.backend` and `sync.targets`; the match
 statements in `download/mod.rs` and `sync/mod.rs` are the registry.
 
+## Refiling and importing
+
+`td refile` runs every track through the MusicBrainz lookup again, writes the result back
+(which is how a ranking fix reaches tracks filed before it), retags the file and moves it if
+the templated path changed, pruning directories left empty. The m3u8 files are rewritten
+afterwards because their paths may have changed. `--dry-run` prints the moves and touches
+nothing. One lookup per track at one request per second, so a thousand tracks take a quarter
+of an hour.
+
+`td import DIR` is for a folder that predates tapedeck. Each audio file is identified by its
+`MUSICBRAINZ_TRACKID` tag when present, otherwise by a MusicBrainz search on artist and
+title (from tags, else from an `Artist - Title` file name) scored by how close the file's
+length is to the recording's. A recording the library already has makes the file a
+duplicate: reported, or deleted with `--apply --delete-duplicates`. Anything else is filed
+exactly like a download would be. The default is a dry run; `--apply` moves files.
+
+`td remote ls` and `td remote rm GLOB` talk to the sync targets' own playlist lists, so the
+history another tool left behind (`Weekly-Jams-2026-Week*`) can be cleared without opening
+Plex. `rm` only lists matches until `--yes` is given.
+
 ## Data model
 
 ```

@@ -129,10 +129,20 @@ impl Db {
             "INSERT INTO tracks (recording_mbid, album_id, title, artist, track_no, artist_mbid, duration_ms)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(recording_mbid) DO UPDATE SET title = excluded.title, artist = excluded.artist,
+                 album_id = excluded.album_id, track_no = excluded.track_no,
                  artist_mbid = excluded.artist_mbid, duration_ms = excluded.duration_ms RETURNING id",
             params![t.recording_mbid, album_id, t.title, t.artist, t.track_no, t.artist_mbid, t.duration_ms],
             |r| r.get(0),
         )?)
+    }
+
+    pub fn all_tracks(&self) -> Result<Vec<Track>> {
+        self.query_tracks(&format!("{TRACK_SELECT} ORDER BY t.id"), [])
+    }
+
+    pub fn set_path(&self, id: i64, rel_path: &str) -> Result<()> {
+        self.0.execute("UPDATE tracks SET path = ?2 WHERE id = ?1", params![id, rel_path])?;
+        Ok(())
     }
 
     pub fn wanted_tracks(&self) -> Result<Vec<Track>> {

@@ -173,6 +173,9 @@ Everything else has a default. The full reference is in
 | `td push PLAYLIST [--to TARGET]` | Re-push one playlist |
 | `td retry` | Reset failed downloads so the next sync tries again |
 | `td source ID URL` | Pin the download URL for one track and queue it |
+| `td refile [--dry-run]` | Re-check every track against MusicBrainz, retag, move files whose path changed |
+| `td import DIR [--apply] [--delete-duplicates]` | Bring an existing folder (say, Explo's downloads) into the library; dry run by default |
+| `td remote ls` / `td remote rm GLOB [--yes]` | List or bulk-delete playlists on a sync target |
 | `td daemon` | Run as a service: listen on the socket, sync every `sync.interval` |
 
 Add `--json` to any of them for newline-delimited JSON instead of text.

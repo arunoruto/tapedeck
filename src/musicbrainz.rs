@@ -32,14 +32,11 @@ impl MusicBrainz {
         Self { http }
     }
 
-    pub async fn recording(&self, mbid: &str) -> Result<Recording> {
-        // ponytail: a lookup returns at most 25 releases; for very popular recordings the studio album
-        // can fall outside that window. Switch to browsing /release?recording=<mbid>&limit=100 if it bites.
-        let url = format!("{API}/recording/{mbid}?inc=artist-credits+releases+release-groups+media&fmt=json");
+    async fn get(&self, url: &str, what: &str) -> Result<Value> {
         let mut attempt = 0;
-        let v: Value = loop {
+        loop {
             attempt += 1;
-            let res = self.http.get(&url).send().await?;
+            let res = self.http.get(url).send().await?;
             // ponytail: MusicBrainz allows 1 req/s per client; a sleep after each call keeps us polite without a rate limiter.
             tokio::time::sleep(Duration::from_secs(1)).await;
             let status = res.status();
@@ -47,10 +44,65 @@ impl MusicBrainz {
                 tokio::time::sleep(Duration::from_secs(2 * attempt)).await;
                 continue;
             }
-            break res.error_for_status().with_context(|| format!("musicbrainz recording {mbid}"))?.json().await?;
-        };
+            return Ok(res.error_for_status().with_context(|| format!("musicbrainz {what}"))?.json().await?);
+        }
+    }
+
+    pub async fn recording(&self, mbid: &str) -> Result<Recording> {
+        // ponytail: a lookup returns at most 25 releases; for very popular recordings the studio album
+        // can fall outside that window. Switch to browsing /release?recording=<mbid>&limit=100 if it bites.
+        let url = format!("{API}/recording/{mbid}?inc=artist-credits+releases+release-groups+media&fmt=json");
+        let v = self.get(&url, &format!("recording {mbid}")).await?;
         parse_recording(&v, mbid)
     }
+
+    /// Best recording MBID for an untagged file: search by artist and title, then prefer the
+    /// hit whose length matches the file. None if nothing scores well enough.
+    /// Lucene ties most hits at 100 in no stable order, so we ask for the maximum and let
+    /// `pick_search_hit` sort it out; a popular song has dozens of recordings (live, remasters,
+    /// compilation copies, covers).
+    pub async fn search_recording(&self, artist: &str, title: &str, length_ms: Option<i64>) -> Result<Option<String>> {
+        let q = format!("recording:\"{}\" AND artist:\"{}\"", lucene(title), lucene(artist));
+        let url = format!("{API}/recording/?query={}&limit=100&fmt=json", urlencoding::encode(&q));
+        let v = self.get(&url, &format!("search {artist} - {title}")).await?;
+        Ok(pick_search_hit(&v, artist, length_ms))
+    }
+}
+
+fn lucene(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+fn pick_search_hit(v: &Value, artist: &str, length_ms: Option<i64>) -> Option<String> {
+    const OFF_KINDS: &[&str] = &["karaoke", "instrumental", "live", "cover", "tribute", "remix"];
+    let wanted = artist.to_lowercase();
+    let hits: Vec<&Value> = v["recordings"]
+        .as_array()?
+        .iter()
+        .filter(|r| r["score"].as_i64().unwrap_or(0) >= 80)
+        // Covers match the search too (the work links back to the original); keep the artist's own.
+        .filter(|r| wanted.is_empty() || credit(&r["artist-credit"]).0.to_lowercase().contains(&wanted))
+        .filter(|r| {
+            let dis = r["disambiguation"].as_str().unwrap_or("").to_lowercase();
+            !OFF_KINDS.iter().any(|k| dis.contains(k))
+        })
+        .collect();
+    // A recording that is on a plain studio album first (not only compilations, remaster reissues
+    // or live sets), then closest length in 3 s steps, then the one on the most releases. A popular
+    // song has dozens of one-release compilation copies within a few seconds of the album take.
+    let best = hits.iter().min_by_key(|r| {
+        let drift = match (length_ms, r["length"].as_i64()) {
+            (Some(want), Some(l)) => (l - want).abs() / 3000,
+            _ => i64::MAX / 2,
+        };
+        let releases = r["releases"].as_array().cloned().unwrap_or_default();
+        let on_album = releases.iter().any(|rel| {
+            rel["release-group"]["primary-type"].as_str() == Some("Album")
+                && rel["release-group"]["secondary-types"].as_array().is_none_or(|t| t.is_empty())
+        });
+        (!on_album, drift, -(releases.len() as i64))
+    })?;
+    best["id"].as_str().map(str::to_owned)
 }
 
 pub fn parse_recording(v: &Value, mbid: &str) -> Result<Recording> {
@@ -190,6 +242,33 @@ mod tests {
         let r = parse_recording(&v, "rec").unwrap();
         assert_eq!(r.artist, "Bonobo feat. Nicole Miglis");
         assert_eq!((r.album_artist.as_str(), r.album_artist_mbid.as_str()), ("bonobo-id", "bonobo-id"));
+    }
+
+    #[test]
+    fn search_prefers_matching_length_then_most_releases_and_skips_karaoke() {
+        let q = json!([{"name": "Queen", "artist": {"id": "q"}}]);
+        let v = json!({"recordings": [
+            {"id": "cover", "score": 100, "length": 238000, "artist-credit": [{"name": "Philharmonix"}],
+             "releases": [{"release-group": {"primary-type": "Album"}}]},
+            {"id": "live", "score": 100, "length": 410000, "artist-credit": q, "releases": [{}, {}]},
+            {"id": "karaoke", "artist-credit": q, "score": 100, "length": 238500, "disambiguation": "karaoke version", "releases": [{}]},
+            {"id": "studio", "artist-credit": q, "score": 95, "length": 238000, "releases": [{"release-group": {"primary-type": "Album"}}, {}]},
+            {"id": "remaster", "artist-credit": q, "score": 95, "length": 238000, "releases": [{"release-group": {"primary-type": "Album", "secondary-types": ["Compilation"]}}, {}, {}, {}, {}]},
+            {"id": "comp-copy", "artist-credit": q, "score": 95, "length": 240000, "releases": [{}]},
+            {"id": "junk", "artist-credit": q, "score": 40, "length": 238000, "releases": []}
+        ]});
+        assert_eq!(
+            pick_search_hit(&v, "Queen", Some(240000)).as_deref(),
+            Some("studio"),
+            "album take beats an exact-length compilation copy"
+        );
+        assert_eq!(
+            pick_search_hit(&v, "queen", None).as_deref(),
+            Some("studio"),
+            "no length: studio album beats a bigger pile of compilations"
+        );
+        assert_eq!(pick_search_hit(&json!({"recordings": [{"id": "junk", "score": 40}]}), "", None), None);
+        assert_eq!(lucene(r#"Say "Hi""#), r#"Say \"Hi\""#);
     }
 
     #[test]

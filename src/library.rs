@@ -10,6 +10,8 @@ use lofty::tag::{ItemKey, Tag};
 
 use crate::db::Track;
 
+const AUDIO_EXT: &[&str] = &["opus", "ogg", "mp3", "m4a", "aac", "flac", "wav", "wma"];
+
 const TOKENS: &[&str] = &["artist", "album_artist", "album", "year", "track", "track:02", "title", "ext"];
 
 /// Render a Lidarr-style template like `{album_artist}/{album} ({year})/{track:02} - {title}.{ext}`.
@@ -116,8 +118,92 @@ pub fn file_track(library: &Path, template: &str, t: &Track, downloaded: &Path) 
     let rel = render_template(template, t, ext)?;
     let dest = library.join(&rel);
     std::fs::create_dir_all(dest.parent().context("template has no directory part")?)?;
-    std::fs::rename(downloaded, &dest).with_context(|| format!("moving to {}", dest.display()))?;
+    move_file(downloaded, &dest)?;
     Ok(rel)
+}
+
+/// Move a track already in the library to a new relative path and drop directories left empty.
+pub fn move_track(library: &Path, old_rel: &Path, new_rel: &Path) -> Result<()> {
+    let (from, to) = (library.join(old_rel), library.join(new_rel));
+    std::fs::create_dir_all(to.parent().context("template has no directory part")?)?;
+    move_file(&from, &to)?;
+    let mut dir = from.parent();
+    while let Some(d) = dir
+        && d != library
+        && std::fs::remove_dir(d).is_ok()
+    {
+        dir = d.parent();
+    }
+    Ok(())
+}
+
+/// rename, falling back to copy + delete when source and library are on different filesystems.
+fn move_file(from: &Path, to: &Path) -> Result<()> {
+    if std::fs::rename(from, to).is_ok() {
+        return Ok(());
+    }
+    std::fs::copy(from, to).with_context(|| format!("copying to {}", to.display()))?;
+    std::fs::remove_file(from)?;
+    Ok(())
+}
+
+/// An audio file found outside the library, with whatever identity its tags or name give away.
+#[derive(Debug, Clone)]
+pub struct Found {
+    pub path: PathBuf,
+    pub artist: String,
+    pub title: String,
+    pub recording_mbid: Option<String>,
+    pub duration_ms: Option<i64>,
+}
+
+/// Recursively list audio files under `dir`, reading tags where present.
+pub fn scan(dir: &Path) -> Result<Vec<Found>> {
+    let mut out = vec![];
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        for entry in std::fs::read_dir(&d).with_context(|| format!("reading {}", d.display()))? {
+            let p = entry?.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p
+                .extension()
+                .and_then(|e| e.to_str())
+                .is_some_and(|e| AUDIO_EXT.contains(&e.to_lowercase().as_str()))
+            {
+                out.push(inspect(&p));
+            }
+        }
+    }
+    out.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(out)
+}
+
+fn inspect(path: &Path) -> Found {
+    let (mut artist, mut title) = parse_stem(path.file_stem().and_then(|s| s.to_str()).unwrap_or(""));
+    let mut recording_mbid = None;
+    let mut duration_ms = None;
+    if let Ok(file) = Probe::open(path).and_then(|p| p.read()) {
+        duration_ms = Some(file.properties().duration().as_millis() as i64);
+        if let Some(tag) = file.primary_tag() {
+            if let Some(a) = tag.artist() {
+                artist = a.to_string();
+            }
+            if let Some(t) = tag.title() {
+                title = t.to_string();
+            }
+            recording_mbid = tag.get_string(ItemKey::MusicBrainzRecordingId).map(str::to_owned);
+        }
+    }
+    Found { path: path.to_path_buf(), artist, title, recording_mbid, duration_ms }
+}
+
+/// "Artist - Title" → ("Artist", "Title"); anything else is all title.
+fn parse_stem(stem: &str) -> (String, String) {
+    match stem.split_once(" - ") {
+        Some((a, t)) => (a.trim().to_string(), t.trim().to_string()),
+        None => (String::new(), stem.trim().to_string()),
+    }
 }
 
 #[cfg(test)]
@@ -149,6 +235,8 @@ mod tests {
         assert_eq!(sanitize("POST HUMAN: NeX GEn"), "POST HUMAN - NeX GEn");
         assert_eq!(sanitize("R U Mine?"), "R U Mine");
         assert_eq!(sanitize("..."), "_");
+        assert_eq!(parse_stem("Bicep - Apricots"), ("Bicep".into(), "Apricots".into()));
+        assert_eq!(parse_stem("Apricots"), (String::new(), "Apricots".into()));
         assert!(render_template("{nope}", &t, "opus").is_err());
         assert!(validate_template("{artist}/{title}.{ext}").is_ok());
     }
