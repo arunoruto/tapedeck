@@ -41,6 +41,7 @@ startup error.
 |---|---|---|
 | `user` | required | ListenBrainz username whose created-for playlists to follow. |
 | `token` | none | User token. Only needed if the playlists are private. |
+| `token_file` | none | Path to a file containing the token, instead of `token`. See [Secrets](#secrets). |
 | `playlists` | `["weekly-jams", "weekly-exploration"]` | Which generated playlists to track, by ListenBrainz `source_patch` name. `daily-jams` is the other common one. |
 
 ## `[download]`
@@ -67,8 +68,44 @@ yt-dlp is searched with `ytsearch1:<artist> - <title>` unless a track has an exp
 |---|---|
 | `url` | Server URL, e.g. `http://plex.local:32400`. |
 | `token` | `X-Plex-Token`. Find it via Plex's "Get Info → View XML" on any item. |
+| `token_file` | Path to a file containing the token, instead of `token`. One of the two is required. |
 | `section` | Name of the music library section, usually `Music`. |
 | `path_map` | Local prefix → the prefix Plex sees, e.g. `{ "/srv/music" = "/music" }` for a container. Longest match wins. Leave out if identical. |
+
+## Secrets
+
+Every `token` has a `token_file` twin. tapedeck reads the file at startup, strips the
+trailing newline, and from then on behaves as if `token` had been set. Setting both is an
+error. This is how you keep tokens out of a config that lives in Git or in the Nix store:
+point `token_file` at whatever sops-nix, agenix or `systemd-creds` puts on disk.
+
+## Home Manager
+
+The flake exports a Home Manager module. Add the flake as an input, import
+`tapedeck.homeModules.default`, then:
+
+```nix
+programs.tapedeck = {
+  enable = true;
+  settings = {
+    library = "/srv/music";
+    listenbrainz.user = "me";
+    sync.targets = [ "plex" ];
+    sync.plex = {
+      url = "http://plex.local:32400";
+      token_file = config.sops.secrets.plex-token.path;
+      section = "Music";
+    };
+  };
+};
+services.tapedeck.enable = true;   # systemd user unit running `td daemon`
+```
+
+`settings` is written verbatim to `~/.config/tapedeck/config.toml`, so every key in this
+document applies. The package defaults to the flake's own build; `programs.tapedeck.package`
+overrides it.
+
+## Plex sync behaviour
 
 On each push tapedeck triggers a scan of the section, waits for it to finish, matches
 files by path, deletes any existing playlist with the same name and recreates it. The

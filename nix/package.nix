@@ -1,4 +1,4 @@
-{ lib, rustPlatform, makeWrapper, cacert, versionCheckHook, nix-update-script, yt-dlp, ffmpeg }:
+{ lib, rustPlatform, makeWrapper, cacert, versionCheckHook, nix-update-script, yt-dlp, ffmpeg-headless }:
 
 rustPlatform.buildRustPackage (finalAttrs: {
   pname = "tapedeck";
@@ -19,8 +19,9 @@ rustPlatform.buildRustPackage (finalAttrs: {
   nativeCheckInputs = [ cacert ];
 
   # yt-dlp needs ffmpeg for audio extraction; put both on td's PATH.
+  # ffmpeg-headless: the full ffmpeg drags in SDL/GUI libraries for ffplay, ~1 GiB we never use.
   postInstall = ''
-    wrapProgram $out/bin/td --prefix PATH : ${lib.makeBinPath [ yt-dlp ffmpeg ]}
+    wrapProgram $out/bin/td --prefix PATH : ${lib.makeBinPath [ yt-dlp ffmpeg-headless ]}
   '';
 
   nativeInstallCheckInputs = [ versionCheckHook ];

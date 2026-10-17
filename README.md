@@ -27,12 +27,16 @@ Prebuilt binaries for Linux and macOS (x86_64 and arm64) are attached to each
 bin install github.com/arunoruto/tapedeck
 ```
 
-With Nix (x86_64-linux builds are cached at `arunoruto.cachix.org`):
+With Nix (x86_64-linux builds are cached at `arunoruto.cachix.org`; the flake's `nixConfig`
+offers the cache, accept it with `--accept-flake-config` or add it to your substituters):
 
 ```sh
 nix run github:arunoruto/tapedeck -- --help
-# or add the overlay / package from the flake to your system
 ```
+
+There is also a Home Manager module (`homeModules.default`) that writes the config and can
+run the daemon as a user service, and an overlay. See
+[docs/configuration.md](docs/configuration.md#home-manager).
 
 With cargo:
 
@@ -75,7 +79,8 @@ use from scripts or an agent.
 `td` command connects to the daemon when it is running and otherwise just does the work
 itself, so the CLI behaves the same with or without the service.
 
-A user unit is in [`systemd/tapedeck.service`](systemd/tapedeck.service).
+A user unit for cargo installs is in [`systemd/tapedeck.service`](systemd/tapedeck.service);
+Nix users get one from the Home Manager module with `services.tapedeck.enable`.
 
 ## Docs
 

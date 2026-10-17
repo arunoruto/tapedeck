@@ -33,8 +33,9 @@ pub struct Config {
 #[serde(deny_unknown_fields)]
 pub struct ListenBrainz {
     pub user: String,
-    /// Only needed for private playlists.
+    /// Only needed for private playlists. Inline, or read from `token_file`.
     pub token: Option<String>,
+    pub token_file: Option<PathBuf>,
     /// `source_patch` names of the created-for playlists to follow.
     #[serde(default = "default_playlists")]
     pub playlists: Vec<String>,
@@ -68,7 +69,9 @@ pub struct Sync {
 #[serde(deny_unknown_fields)]
 pub struct Plex {
     pub url: String,
-    pub token: String,
+    /// X-Plex-Token. Set this or `token_file` (a path holding the token, e.g. from sops-nix).
+    pub token: Option<String>,
+    pub token_file: Option<PathBuf>,
     /// Library section name, e.g. "Music".
     pub section: String,
     /// Local path prefix → path prefix as Plex sees it. Empty if identical.
@@ -116,9 +119,12 @@ impl Config {
         };
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("reading config {} (see config.example.toml)", path.display()))?;
-        Self::parse(&text)
+        let mut cfg = Self::parse(&text)?;
+        cfg.resolve_secrets()?;
+        Ok(cfg)
     }
 
+    /// Parse and validate, without touching the filesystem.
     pub fn parse(text: &str) -> Result<Self> {
         let cfg: Config = toml::from_str(text).context("parsing config")?;
         crate::library::validate_template(&cfg.path_template)?;
@@ -127,8 +133,23 @@ impl Config {
                 bail!("sync.targets lists plex but [sync.plex] is missing");
             }
         }
+        if let Some(p) = &cfg.sync.plex
+            && p.token.is_none()
+            && p.token_file.is_none()
+        {
+            bail!("[sync.plex] needs token or token_file");
+        }
         cfg.sync_interval()?;
         Ok(cfg)
+    }
+
+    /// Replace every `token_file` with the file's contents so the rest of the code only sees `token`.
+    pub fn resolve_secrets(&mut self) -> Result<()> {
+        read_token(&mut self.listenbrainz.token, &self.listenbrainz.token_file, "[listenbrainz]")?;
+        if let Some(p) = &mut self.sync.plex {
+            read_token(&mut p.token, &p.token_file, "[sync.plex]")?;
+        }
+        Ok(())
     }
 
     pub fn playlist_dir(&self) -> PathBuf {
@@ -166,6 +187,19 @@ impl Config {
     }
 }
 
+fn read_token(token: &mut Option<String>, file: &Option<PathBuf>, section: &str) -> Result<()> {
+    match (&token, file) {
+        (Some(_), Some(_)) => bail!("{section}: set token or token_file, not both"),
+        (None, Some(f)) => {
+            let text =
+                std::fs::read_to_string(f).with_context(|| format!("{section}: reading token_file {}", f.display()))?;
+            *token = Some(text.trim().to_string());
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 fn xdg(var: &str, fallback: &str) -> PathBuf {
     std::env::var_os(var)
         .map(PathBuf::from)
@@ -196,5 +230,28 @@ mod tests {
             Config::parse("path_template = \"{title}\"\n[listenbrainz]\nuser = \"u\"\n").is_err(),
             "library required"
         );
+        let plex = "[sync.plex]\nurl = \"http://p\"\nsection = \"Music\"\n";
+        assert!(Config::parse(&format!("{base}{plex}")).is_err(), "plex needs a token");
+        assert!(Config::parse(&format!("{base}{plex}token_file = \"/run/secrets/plex\"\n")).is_ok());
+    }
+
+    #[test]
+    fn token_file_is_read_and_trimmed() {
+        let file = std::env::temp_dir().join(format!("tapedeck-token-{}", std::process::id()));
+        std::fs::write(&file, "s3cret\n").unwrap();
+        let text = format!(
+            "library = \"/m\"\n[listenbrainz]\nuser = \"u\"\ntoken_file = {file:?}\n[sync.plex]\nurl = \"http://p\"\nsection = \"Music\"\ntoken_file = {file:?}\n"
+        );
+        let mut cfg = Config::parse(&text).unwrap();
+        cfg.resolve_secrets().unwrap();
+        assert_eq!(cfg.listenbrainz.token.as_deref(), Some("s3cret"));
+        assert_eq!(cfg.sync.plex.unwrap().token.as_deref(), Some("s3cret"));
+
+        let mut both = Config::parse(&format!("{text}token = \"inline\"\n")).unwrap();
+        assert!(both.resolve_secrets().unwrap_err().to_string().contains("not both"));
+        let mut missing =
+            Config::parse("library = \"/m\"\n[listenbrainz]\nuser = \"u\"\ntoken_file = \"/nonexistent\"\n").unwrap();
+        assert!(missing.resolve_secrets().is_err());
+        std::fs::remove_file(file).unwrap();
     }
 }

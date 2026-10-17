@@ -17,19 +17,22 @@ use crate::config;
 
 pub struct Plex {
     cfg: config::Plex,
+    token: String,
     http: Client,
 }
 
 impl Plex {
     pub fn new(cfg: config::Plex) -> Self {
-        Self { cfg, http: Client::new() }
+        // `Config::load` has already turned token_file into token.
+        let token = cfg.token.clone().unwrap_or_default();
+        Self { cfg, token, http: Client::new() }
     }
 
     async fn call(&self, method: reqwest::Method, path: &str) -> Result<Value> {
         let res = self
             .http
             .request(method, format!("{}{}", self.cfg.url.trim_end_matches('/'), path))
-            .header("X-Plex-Token", &self.cfg.token)
+            .header("X-Plex-Token", &self.token)
             .header("Accept", "application/json")
             .send()
             .await?

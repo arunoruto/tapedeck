@@ -13,6 +13,7 @@ path_template = "{album_artist}/{album} ({year})/{track:02} - {title}.{ext}"
 [listenbrainz]
 user = "your-listenbrainz-name"
 # token = "..."                                     # only for private playlists
+# token_file = "/run/secrets/listenbrainz-token"    # alternative to token: read it from a file
 playlists = ["weekly-jams", "weekly-exploration"]  # also: daily-jams
 
 [download]
@@ -27,6 +28,7 @@ targets = ["plex"]
 [sync.plex]
 url = "http://plex.local:32400"
 token = "your-plex-token"
+# token_file = "/run/secrets/plex-token"           # instead of token; sops-nix / agenix friendly
 section = "Music"
 # How Plex sees the library if it runs in a container or on another host:
 # path_map = { "/srv/music" = "/music" }
