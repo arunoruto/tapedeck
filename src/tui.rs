@@ -658,14 +658,8 @@ impl Tui {
         ];
         f.render_widget(Paragraph::new(cassette), logo);
 
-        let [name, tabs, counts, filter] = Layout::vertical([Constraint::Length(1); 4]).areas(right);
-        f.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled("tapedeck", Style::new().fg(th.accent).bold()),
-                Span::styled(format!("  {}", th.name), Style::new().fg(th.muted)),
-            ])),
-            name,
-        );
+        // Tabs and counts sit level with the cassette's stripes and reels; no name, no theme.
+        let [_, tabs, counts, filter] = Layout::vertical([Constraint::Length(1); 4]).areas(right);
         f.render_widget(
             Tabs::new(TABS)
                 .select(self.tab as usize)
