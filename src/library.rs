@@ -3,7 +3,9 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use lofty::config::WriteOptions;
+use lofty::config::{ParseOptions, WriteOptions};
+use lofty::id3::v2::Frame;
+use lofty::mpeg::MpegFile;
 use lofty::prelude::*;
 use lofty::probe::Probe;
 use lofty::tag::{ItemKey, ItemValue, Tag};
@@ -189,9 +191,7 @@ fn inspect(path: &Path) -> Found {
         // "MusicBrainz Track Id" or "MusicBrainz_TrackId"; all of them hold the recording MBID.
         let find_mbid = |tag: &lofty::tag::Tag| {
             tag.items().find_map(|item| {
-                let key: String =
-                    format!("{:?}", item.key()).to_lowercase().chars().filter(|c| c.is_ascii_alphanumeric()).collect();
-                if !key.contains("musicbrainztrackid") && !key.contains("musicbrainzrecordingid") {
+                if !is_recording_id_key(&format!("{:?}", item.key())) {
                     return None;
                 }
                 let v = match item.value() {
@@ -201,8 +201,7 @@ fn inspect(path: &Path) -> Found {
                 find_uuid(&v)
             })
         };
-        // Try every tag in the file, not just the primary one: some files carry the MBID only
-        // in an APE or ID3v2.3 tag beside an empty newer one.
+        // Every tag in the file, not just the primary one.
         recording_mbid = file.tags().iter().find_map(find_mbid);
         if let Some(tag) = file.primary_tag() {
             if let Some(a) = tag.artist() {
@@ -213,7 +212,25 @@ fn inspect(path: &Path) -> Found {
             }
         }
     }
+    if recording_mbid.is_none() {
+        // lofty's generic tag drops TXXX frames with descriptions it doesn't know, which is
+        // exactly Explo's "MusicBrainz_TrackId", so look at the raw ID3v2 frames of an MP3.
+        recording_mbid = std::fs::File::open(path)
+            .ok()
+            .and_then(|mut fh| MpegFile::read_from(&mut fh, ParseOptions::new().read_properties(false)).ok())
+            .and_then(|mp3| {
+                mp3.id3v2()?.into_iter().find_map(|frame| match frame {
+                    Frame::UserText(t) if is_recording_id_key(&t.description) => find_uuid(&t.content),
+                    _ => None,
+                })
+            });
+    }
     Found { path: path.to_path_buf(), artist, title, recording_mbid, duration_ms }
+}
+
+fn is_recording_id_key(key: &str) -> bool {
+    let k: String = key.to_lowercase().chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+    k.contains("musicbrainztrackid") || k.contains("musicbrainzrecordingid")
 }
 
 /// The first UUID anywhere in `s` (values may carry NULs, braces or a second value).
@@ -269,9 +286,22 @@ mod tests {
         assert_eq!(parse_stem("Apricots"), (String::new(), "Apricots".into()));
         assert!(is_uuid("5dcf0f17-d13b-47c1-8386-fea1f5e25875"));
         assert!(!is_uuid("not-an-id"));
-        assert_eq!(find_uuid("{5dcf0f17-d13b-47c1-8386-fea1f5e25875}\0"), Some("5dcf0f17-d13b-47c1-8386-fea1f5e25875".into()));
+        assert_eq!(
+            find_uuid("{5dcf0f17-d13b-47c1-8386-fea1f5e25875}\0"),
+            Some("5dcf0f17-d13b-47c1-8386-fea1f5e25875".into())
+        );
         assert_eq!(find_uuid("5dcf0f17"), None);
         assert!(render_template("{nope}", &t, "opus").is_err());
         assert!(validate_template("{artist}/{title}.{ext}").is_ok());
+    }
+
+    /// Explo's files: ID3v2.4, a UTF-8 TXXX frame described "MusicBrainz_TrackId" whose value
+    /// ends in a NUL. Written by ffmpeg exactly like Explo does it.
+    #[test]
+    fn reads_explo_txxx_recording_id() {
+        let found = scan(&Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")).unwrap();
+        let f = found.iter().find(|f| f.path.ends_with("explo-txxx.mp3")).unwrap();
+        assert_eq!(f.recording_mbid.as_deref(), Some("d6b2826c-d46d-4650-b011-44dcbb53ab06"));
+        assert_eq!((f.artist.as_str(), f.title.as_str()), ("Clean Bandit", "Solo feat. Demi Lovato"));
     }
 }
