@@ -17,7 +17,7 @@ use crate::{
     download::{self, Downloader},
     library, listenbrainz, m3u,
     musicbrainz::{MusicBrainz, Recording},
-    sync::{self, SyncTarget, glob_match},
+    sync::{self, RemotePlaylist, SyncTarget, glob_match},
 };
 
 /// Streamed back to whoever invoked a command. `--json` prints these verbatim.
@@ -64,7 +64,9 @@ impl App {
 
     async fn exec(&self, cmd: Command, tx: &Sender<Event>) -> Result<()> {
         match cmd {
-            Command::Daemon => bail!("`daemon` runs in the foreground; it cannot be sent to a running daemon"),
+            Command::Daemon | Command::Tui => {
+                bail!("this command runs in the foreground; it cannot be sent to a running daemon")
+            }
             Command::Sync { playlist, no_push } => self.sync(playlist, no_push, tx).await,
             Command::Status => {
                 let counts: serde_json::Map<_, _> =
@@ -173,7 +175,7 @@ impl App {
                     data(tx, json!({ "target": target.name(), "playlists": playlists })).await?;
                 }
             }
-            RemoteCmd::Rm { pattern, to, yes, include_smart } => {
+            RemoteCmd::Rm { pattern, to, yes, include_smart, no_backup, out } => {
                 for target in self.targets(to.as_deref())? {
                     let hits: Vec<_> = target
                         .list_playlists()
@@ -196,12 +198,74 @@ impl App {
                         }
                         continue;
                     }
+                    if !no_backup {
+                        let dir = out.clone().unwrap_or_else(|| self.config.playlist_dir().join("backup"));
+                        self.backup(target, &hits, &dir, tx).await?;
+                    }
                     for p in &hits {
                         target.delete_playlist(&p.id).await?;
                         info(tx, format!("{}: deleted {} ({} tracks)", target.name(), p.title, p.tracks)).await?;
                     }
                 }
             }
+            RemoteCmd::Backup { pattern, to, out } => {
+                let dir = out.unwrap_or_else(|| self.config.playlist_dir().join("backup"));
+                for target in self.targets(to.as_deref())? {
+                    let hits: Vec<_> =
+                        target.list_playlists().await?.into_iter().filter(|p| glob_match(&pattern, &p.title)).collect();
+                    self.backup(target, &hits, &dir, tx).await?;
+                }
+            }
+            RemoteCmd::Restore { file, to } => {
+                let saved: Value = serde_json::from_slice(&std::fs::read(&file)?).context("reading backup")?;
+                ensure!(
+                    saved["smart"] != true,
+                    "smart playlists are filters, not lists; recreate it in the server's UI"
+                );
+                let title = saved["title"].as_str().context("backup has no title")?;
+                let name = to.as_deref().or(saved["target"].as_str());
+                let files: Vec<PathBuf> = saved["items"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|i| i["file"].as_str().map(PathBuf::from))
+                    .collect();
+                ensure!(!files.is_empty(), "backup has no file paths to restore from");
+                for target in self.targets(name)? {
+                    let id = target.sync_playlist(title, &files).await?;
+                    info(tx, format!("{}: restored {title} ({} tracks, id {id})", target.name(), files.len())).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// One m3u8 (local paths) plus a JSON sidecar per playlist, under `<dir>/<target>/`.
+    async fn backup(
+        &self,
+        target: &dyn SyncTarget,
+        hits: &[RemotePlaylist],
+        dir: &Path,
+        tx: &Sender<Event>,
+    ) -> Result<()> {
+        let dir = dir.join(target.name());
+        std::fs::create_dir_all(&dir)?;
+        for p in hits {
+            let items = target.playlist_items(&p.id).await?;
+            let stem = m3u::safe_name(&p.title);
+            let entries: Vec<(String, PathBuf)> = items
+                .iter()
+                .filter_map(|i| i.file.clone().map(|f| (format!("{} - {}", i.artist, i.title), f)))
+                .collect();
+            let m3u = dir.join(format!("{stem}.m3u8"));
+            m3u::write_entries(&m3u, &p.title, &entries)?;
+            let side = json!({ "target": target.name(), "id": p.id, "title": p.title, "smart": p.smart, "tracks": p.tracks, "items": items });
+            std::fs::write(dir.join(format!("{stem}.json")), serde_json::to_vec_pretty(&side)?)?;
+            info(
+                tx,
+                format!("{}: backed up {} ({} tracks) → {}", target.name(), p.title, entries.len(), m3u.display()),
+            )
+            .await?;
         }
         Ok(())
     }

@@ -21,7 +21,17 @@ pub fn write(playlist_dir: &Path, library: &Path, stem: &str, title: &str, track
     Ok(file)
 }
 
-fn safe_name(s: &str) -> String {
+/// Plain m3u8 with absolute paths, for backups of playlists that live elsewhere.
+pub fn write_entries(file: &Path, title: &str, entries: &[(String, PathBuf)]) -> Result<()> {
+    let mut body = format!("#EXTM3U\n#PLAYLIST:{title}\n");
+    for (label, path) in entries {
+        body.push_str(&format!("#EXTINF:-1,{label}\n{}\n", path.display()));
+    }
+    std::fs::write(file, body)?;
+    Ok(())
+}
+
+pub fn safe_name(s: &str) -> String {
     s.chars().map(|c| if matches!(c, '/' | '\\' | ':' | '\0') { '_' } else { c }).collect::<String>().trim().to_string()
 }
 

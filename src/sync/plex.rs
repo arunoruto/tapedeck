@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use reqwest::Client;
 use serde_json::Value;
 
-use super::{RemotePlaylist, SyncTarget};
+use super::{RemoteItem, RemotePlaylist, SyncTarget};
 use crate::config;
 
 pub struct Plex {
@@ -103,6 +103,22 @@ impl Plex {
         Ok(idx)
     }
 
+    /// Inverse of `remote_path`: what Plex calls the file → where it is for us.
+    fn local_path(&self, remote: &str) -> PathBuf {
+        let hit = self
+            .cfg
+            .path_map
+            .iter()
+            .filter(|(_, to)| remote.starts_with(to.trim_end_matches('/')))
+            .max_by_key(|(_, to)| to.len());
+        match hit {
+            Some((from, to)) => {
+                PathBuf::from(format!("{}{}", from.trim_end_matches('/'), &remote[to.trim_end_matches('/').len()..]))
+            }
+            None => PathBuf::from(remote),
+        }
+    }
+
     fn remote_path(&self, local: &Path) -> String {
         let s = local.to_string_lossy();
         // Longest matching prefix wins.
@@ -146,6 +162,23 @@ impl SyncTarget for Plex {
                     title: p["title"].as_str().unwrap_or("").to_string(),
                     tracks: p["leafCount"].as_i64().unwrap_or(0),
                     smart: p["smart"].as_bool().unwrap_or(false) || p["smart"].as_i64() == Some(1),
+                })
+            })
+            .collect())
+    }
+
+    async fn playlist_items(&self, id: &str) -> Result<Vec<RemoteItem>> {
+        let v = self.get(&format!("/playlists/{id}/items")).await?;
+        Ok(v["MediaContainer"]["Metadata"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|m| {
+                Some(RemoteItem {
+                    id: m["ratingKey"].as_str()?.to_string(),
+                    artist: m["originalTitle"].as_str().or(m["grandparentTitle"].as_str()).unwrap_or("").to_string(),
+                    title: m["title"].as_str().unwrap_or("").to_string(),
+                    file: m["Media"][0]["Part"][0]["file"].as_str().map(|f| self.local_path(f)),
                 })
             })
             .collect())

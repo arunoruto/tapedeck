@@ -16,6 +16,8 @@ src/
   musicbrainz.rs   recording lookup
   download/        Downloader trait, yt-dlp implementation
   sync/            SyncTarget trait, Plex implementation
+  tui.rs           `td tui`: ratatui browser over the database (read-only)
+  render.rs        tables / key-value lines for human output
 ```
 
 ## Sync flow
@@ -98,7 +100,19 @@ exactly like a download would be. The default is a dry run; `--apply` moves file
 
 `td remote ls` and `td remote rm GLOB` talk to the sync targets' own playlist lists, so the
 history another tool left behind (`Weekly-Jams-2026-Week*`) can be cleared without opening
-Plex. `rm` only lists matches until `--yes` is given.
+Plex. `rm` only lists matches until `--yes` is given, skips the server's own smart playlists
+unless told otherwise, and first writes each playlist as an m3u8 (local paths) plus a JSON
+sidecar under `<playlist_dir>/backup/<target>/`; `td remote backup` does only that, and
+`td remote restore FILE.json` recreates a playlist from the sidecar.
+
+## TUI
+
+`td tui` opens the database directly (no daemon round-trip) and fetches each sync target's
+playlist list once at start. Left pane: the whole library, local playlists with their sync
+marks, remote playlists dimmed. Right pane: tracks with status, year and length; `/` filters
+by artist, title or album; the bar below shows the selected track's id, path, source URL and
+error. It changes nothing, by design, until the actions (retry, pin a source, push, delete)
+get confirmation prompts.
 
 ## Data model
 

@@ -4,17 +4,26 @@ use std::path::PathBuf;
 
 use anyhow::{Result, bail};
 use async_trait::async_trait;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::config::Config;
 
-#[derive(Serialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct RemotePlaylist {
     pub id: String,
     pub title: String,
     pub tracks: i64,
     /// Server-generated (Plex smart playlists); never bulk-deleted unless asked.
     pub smart: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct RemoteItem {
+    pub id: String,
+    pub artist: String,
+    pub title: String,
+    /// Local path (mapped back through path_map) when the target exposes one.
+    pub file: Option<PathBuf>,
 }
 
 pub mod plex;
@@ -25,6 +34,8 @@ pub trait SyncTarget: Send + Sync {
     /// Create or replace the playlist `title` with these local files. Returns the remote id.
     async fn sync_playlist(&self, title: &str, files: &[PathBuf]) -> Result<String>;
     async fn list_playlists(&self) -> Result<Vec<RemotePlaylist>>;
+    /// Tracks of one playlist, in order.
+    async fn playlist_items(&self, id: &str) -> Result<Vec<RemoteItem>>;
     async fn delete_playlist(&self, id: &str) -> Result<()>;
 }
 

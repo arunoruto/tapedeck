@@ -175,8 +175,10 @@ Everything else has a default. The full reference is in
 | `td source ID URL` | Pin the download URL for one track and queue it |
 | `td refile [--dry-run]` | Re-check every track against MusicBrainz, retag, move files whose path changed |
 | `td import DIR [--apply] [--delete-duplicates]` | Bring an existing folder (say, Explo's downloads) into the library; dry run by default |
-| `td remote ls` / `td remote rm GLOB [--yes]` | List or bulk-delete playlists on a sync target |
+| `td remote ls` / `td remote rm GLOB [--yes]` | List or bulk-delete playlists on a sync target; `rm` backs up first |
+| `td remote backup [GLOB]` / `td remote restore FILE` | Save target playlists as m3u8 + JSON, or recreate one from such a file |
 | `td daemon` | Run as a service: listen on the socket, sync every `sync.interval` |
+| `td tui` | Browse playlists and tracks in the terminal (read-only) |
 
 Output is a table or plain lines; add `--json` to any command for newline-delimited JSON
 events instead, which is what scripts and agents should parse.
@@ -221,7 +223,8 @@ its socket.
 Working today: the whole pipeline above, yt-dlp as the download backend, Plex as the sync
 target.
 
-- [ ] A TUI for browsing the library and playlists and watching downloads
+- [x] A TUI for browsing the library and playlists (read-only so far)
+- [ ] Actions in the TUI: retry, pin a source, push, delete, with confirmation
 - [ ] More sync targets: Jellyfin, plain m3u export
 - [ ] More download backends: Soulseek
 - [ ] Playback, eventually

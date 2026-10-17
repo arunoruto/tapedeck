@@ -23,6 +23,8 @@ pub struct Cli {
 pub enum Command {
     /// Run as a service: listen on the socket and sync on an interval.
     Daemon,
+    /// Browse playlists and tracks in the terminal (read-only).
+    Tui,
     /// Fetch ListenBrainz playlists, download missing tracks, write m3u files, push to sync targets.
     Sync {
         /// Only this playlist kind (e.g. weekly-jams).
@@ -91,5 +93,28 @@ pub enum RemoteCmd {
         /// Also match the server's own smart playlists.
         #[arg(long)]
         include_smart: bool,
+        /// Skip the m3u8 + JSON backup normally written before deleting.
+        #[arg(long)]
+        no_backup: bool,
+        /// Backup directory (default: <playlist_dir>/backup).
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Save matching playlists as m3u8 + JSON (what `rm` does before deleting).
+    Backup {
+        #[arg(default_value = "*")]
+        pattern: String,
+        #[arg(long)]
+        to: Option<String>,
+        /// Output directory (default: <playlist_dir>/backup).
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Recreate a playlist from a JSON file written by `backup`.
+    Restore {
+        file: PathBuf,
+        /// Target to restore to (default: the one the backup came from).
+        #[arg(long)]
+        to: Option<String>,
     },
 }

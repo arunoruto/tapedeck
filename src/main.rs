@@ -21,6 +21,9 @@ async fn main() -> Result<()> {
     if let Command::Daemon = cli.cmd {
         return daemon::serve(config).await;
     }
+    if let Command::Tui = cli.cmd {
+        return tapedeck::tui::run(config).await;
+    }
 
     let (tx, mut rx) = mpsc::channel(64);
     let cmd = cli.cmd.clone();
