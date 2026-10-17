@@ -12,7 +12,7 @@ A complete example lives in [`config.example.toml`](../config.example.toml).
 |---|---|---|
 | `library` | required | Root of the music library. Downloads land under it. |
 | `path_template` | `{album_artist}/{album} ({year})/{track:02} - {title}.{ext}` | Where a track is filed, relative to `library`. See below. |
-| `playlist_dir` | `<library>/Playlists` | Where m3u8 files are written. |
+| `playlist_dir` | `<library>/playlists` | Where the m3u8 files go: one current file per playlist kind (`weekly-jams.m3u8`), superseded ones under `archive/<kind>/`, playlist backups under `backup/<target>/`. Lowercase slugs throughout. |
 | `database` | `$XDG_DATA_HOME/tapedeck/tapedeck.db` | SQLite file. |
 | `socket` | `$XDG_RUNTIME_DIR/tapedeck.sock` | Daemon socket. Falls back next to the database if `XDG_RUNTIME_DIR` is unset. |
 
@@ -131,4 +131,6 @@ the section in Plex's settings.
 On each push tapedeck triggers a scan of the section, waits for it to finish, matches
 files by path, deletes any existing playlist with the same name and recreates it. The
 Plex playlist is named after the playlist kind (`Weekly Jams`), so it is replaced each
-week rather than piling up. The dated history stays in the m3u8 files.
+week rather than piling up. The m3u8 on disk (`playlists/weekly-jams.m3u8`) follows the same
+rule; the week it replaces is kept under `playlists/archive/weekly-jams/2026-w41.m3u8`. Tracks
+that leave a playlist stay in the library.

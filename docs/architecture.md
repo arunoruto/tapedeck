@@ -34,10 +34,19 @@ src/
    `<library>/.tapedeck-tmp`, write tags from the MusicBrainz data, render the path
    template and rename the file into place. Success → `ready` with its relative path;
    failure → `failed` with the error text. `td retry` flips `failed` back to `wanted`.
-4. Write an m3u8 for each playlist fetched in this run, named `<Kind> <date>.m3u8`
-   (`Weekly Jams 2026-10-05.m3u8`); the full ListenBrainz title is inside the file.
+4. Write one current m3u8 per playlist kind (`playlists/weekly-jams.m3u8`), replaced on
+   every run; the full ListenBrainz title is inside the file. The playlist it replaces is
+   written to `archive/<kind>/<period>.m3u8` (`archive/weekly-jams/2026-w41.m3u8`, ISO week
+   for weekly kinds, the date for daily ones). Playlist folders and files are lowercase slugs;
+   the library's own paths follow `path_template` and the targets show `playlist_title`.
+   An older folder layout (`Playlists/`, dated or long-titled files, capitalised backups) is
+   moved into this one on the first sync, nothing deleted.
 5. Push each of those playlists to every enabled sync target and record the result in
    `playlist_syncs`.
+
+Tracks that drop out of a playlist are never deleted or pruned: they stay as ordinary
+library tracks, and only the playlist membership changes. The music lives on the device;
+the playlists are what moves.
 
 Steps 2 and 3 are idempotent per MBID. Running sync twice downloads nothing new.
 
@@ -109,7 +118,7 @@ under `<playlist_dir>/backup` whose paths pointed at files that moved or were de
 history another tool left behind (`Weekly-Jams-2026-Week*`) can be cleared without opening
 Plex. `rm` only lists matches until `--yes` is given, skips the server's own smart playlists
 unless told otherwise, and first writes each playlist as an m3u8 (local paths) plus a JSON
-sidecar under `<playlist_dir>/backup/<target>/`; `td remote backup` does only that, and
+sidecar under `<playlist_dir>/backup/<target>/<slug>.m3u8` (the real title stays in the JSON); `td remote backup` does only that, and
 `td remote restore FILE.json` recreates a playlist from the sidecar.
 
 ## TUI
@@ -165,10 +174,12 @@ download is just the audio.
 **yt-dlp as a subprocess, not a library.** It changes weekly to keep up with sites;
 shelling out means `yt-dlp -U` fixes things without a rebuild.
 
-**One m3u8 per fetched playlist, always.** The dated ListenBrainz title is the file
-name, so the folder is a history of what was recommended when, usable by any player
-without tapedeck. Sync targets get a stable name (`Weekly Jams`) and are replaced each
-week, matching what Explo does.
+**One current m3u8 per playlist kind, plus an archive.** `playlists/weekly-jams.m3u8`
+mirrors what Plex shows: the current week, replaced on every run, usable by any player
+without tapedeck. The week it replaced moves to `playlists/archive/weekly-jams/2026-w41.m3u8`,
+kept just in case and never pushed unless asked. The database holds the same history
+(`td playlists`, the TUI), and the tracks themselves stay in the library whatever the
+playlists do.
 
 **SQLite only, no JSON store.** One source of truth. `--json` on any command gives a
 machine-readable dump when needed.
@@ -179,7 +190,7 @@ recording's credit (`Bonobo feat. Nicole Miglis`); `artists` holds the release's
 folder even when half its tracks have guests.
 
 **Plex playlists are recreated, not diffed.** Deleting and recreating is a handful of
-requests and has no edge cases. Playlist history lives in the m3u8 files, not in Plex.
+requests and has no edge cases. Playlist history lives in the database, not in Plex.
 
 **The release picked for a recording** is ranked: official status, then no secondary
 types (compilation, live, DJ-mix, soundtrack), then released by the track's own artist,

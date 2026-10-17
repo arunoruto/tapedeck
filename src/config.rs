@@ -161,7 +161,7 @@ impl Config {
     }
 
     pub fn playlist_dir(&self) -> PathBuf {
-        self.playlist_dir.clone().unwrap_or_else(|| self.library.join("Playlists"))
+        self.playlist_dir.clone().unwrap_or_else(|| self.library.join("playlists"))
     }
 
     pub fn database_path(&self) -> PathBuf {
@@ -221,7 +221,7 @@ mod tests {
     #[test]
     fn example_config_parses_and_defaults_apply() {
         let cfg = Config::parse(include_str!("../config.example.toml")).unwrap();
-        assert_eq!(cfg.playlist_dir(), PathBuf::from("/srv/music/Playlists"));
+        assert_eq!(cfg.playlist_dir(), PathBuf::from("/srv/music/playlists"));
         assert_eq!(cfg.sync_interval().unwrap(), Duration::from_secs(6 * 3600));
         assert_eq!(cfg.download.format, "opus");
         assert_eq!(cfg.sync.targets, ["plex"]);

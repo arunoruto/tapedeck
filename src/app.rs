@@ -265,9 +265,9 @@ impl App {
         let mut used = HashSet::new();
         for p in hits {
             let items = target.playlist_items(&p.id).await?;
-            let mut stem = m3u::safe_name(&p.title);
+            let mut stem = m3u::slug(&p.title);
             if !used.insert(stem.clone()) {
-                stem = format!("{stem} [{}]", p.id);
+                stem = format!("{stem}-{}", m3u::slug(&p.id));
                 used.insert(stem.clone());
             }
             let entries: Vec<(String, PathBuf)> = items
@@ -420,6 +420,133 @@ impl App {
         Ok(())
     }
 
+    /// Write a superseded playlist to `archive/<kind>/<period>.m3u8` and drop its old files.
+    fn archive(&self, p: &Playlist) -> Result<PathBuf> {
+        let cfg = &self.config;
+        // The title's date ("week of 2026-10-05", "2026-10-17 Sat") is what the user knows the
+        // playlist by; ListenBrainz's own date field can be the day before.
+        let date = date_in(&p.name)
+            .or_else(|| p.date.clone().filter(|d| !d.is_empty()))
+            .unwrap_or_else(|| p.fetched_at.get(..10).unwrap_or("undated").to_string());
+        let dir = cfg.playlist_dir().join("archive").join(&p.kind);
+        let tracks = self.db().playlist_tracks(p.id)?;
+        let file = m3u::write(&dir, &cfg.library, &m3u::period(&p.kind, &date), &p.name, &tracks)?;
+        self.remove_stale(p, &file);
+        Ok(file)
+    }
+
+    /// Delete the files earlier naming schemes left for this playlist, other than `keep`: the
+    /// path recorded in the database, the ListenBrainz title, "<Name> <date>" and "<Name>".
+    fn remove_stale(&self, p: &Playlist, keep: &Path) {
+        let dir = self.config.playlist_dir();
+        let current = dir.join(format!("{}.m3u8", p.kind));
+        let mut old: Vec<PathBuf> = vec![
+            dir.join(format!("{}.m3u8", m3u::safe_name(&p.name))),
+            dir.join(format!("{}.m3u8", m3u::safe_name(&self.title(&p.kind)))),
+        ];
+        old.extend(p.m3u_path.as_deref().map(PathBuf::from));
+        for d in [p.date.clone(), date_in(&p.name)].into_iter().flatten().filter(|d| !d.is_empty()) {
+            old.push(dir.join(format!("{} {d}.m3u8", display_name(&p.kind))));
+        }
+        // Never the file just written, nor the kind's current file: a superseded row's m3u_path
+        // still points at it until the current row is rewritten a moment later.
+        for f in old.into_iter().filter(|f| *f != keep && *f != current) {
+            let _ = std::fs::remove_file(&f);
+        }
+    }
+
+    /// Files from earlier naming schemes whose playlist is no longer in the database
+    /// ("Daily Jams 2026-10-16.m3u8", "Daily Jams for rob, 2026-10-16 Thu.m3u8") still get
+    /// archived: moved two levels down with their relative paths adjusted, or dropped when the
+    /// archive already has that period.
+    fn archive_legacy(&self, kind: &str, current: &Path) -> Result<()> {
+        let dir = self.config.playlist_dir();
+        let prefix = format!("{} ", display_name(kind));
+        let archive = dir.join("archive").join(kind);
+        let Ok(entries) = std::fs::read_dir(&dir) else { return Ok(()) };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Some(date) = name.strip_suffix(".m3u8").filter(|_| name.starts_with(&prefix)).and_then(date_in) else {
+                continue;
+            };
+            if path == current {
+                continue;
+            }
+            let target = archive.join(format!("{}.m3u8", m3u::period(kind, &date)));
+            if !target.exists() {
+                std::fs::create_dir_all(&archive)?;
+                let body: String = std::fs::read_to_string(&path)?
+                    .lines()
+                    .map(|l| match l.starts_with(['#', '/']) || l.is_empty() {
+                        true => l.to_string(),
+                        false => format!("../../{l}"),
+                    })
+                    .map(|l| l + "\n")
+                    .collect();
+                std::fs::write(&target, body)?;
+            }
+            std::fs::remove_file(&path)?;
+        }
+        Ok(())
+    }
+
+    /// Bring an older playlist folder to the current layout, moving and never deleting:
+    /// `Playlists/` → `playlists/` (when the default is in use), backup files to slug names,
+    /// dated and long-titled m3u8s into the archive, database paths along with them.
+    async fn migrate_playlist_dir(&self, tx: &Sender<Event>) -> Result<()> {
+        let cfg = &self.config;
+        let dir = cfg.playlist_dir();
+        if cfg.playlist_dir.is_none()
+            && let Some(parent) = dir.parent()
+            && let Ok(entries) = std::fs::read_dir(parent)
+        {
+            // Literal names: on a case-insensitive filesystem `exists()` cannot tell them apart.
+            let names: Vec<String> = entries.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+            if names.iter().any(|n| n == "Playlists") && !names.iter().any(|n| n == "playlists") {
+                let old = parent.join("Playlists");
+                std::fs::rename(&old, &dir)?;
+                info(tx, format!("moved {} → {}", old.display(), dir.display())).await?;
+                let (old_s, new_s) = (old.to_string_lossy().into_owned(), dir.to_string_lossy().into_owned());
+                let playlists = self.db().playlists()?;
+                for p in playlists {
+                    if let Some(rest) = p.m3u_path.as_deref().and_then(|m| m.strip_prefix(old_s.as_str())) {
+                        self.db().set_playlist_m3u(p.id, &format!("{new_s}{rest}"))?;
+                    }
+                }
+            }
+        }
+        if let Ok(targets) = std::fs::read_dir(dir.join("backup")) {
+            for t in targets.flatten().filter(|t| t.path().is_dir()) {
+                let names: Vec<String> = std::fs::read_dir(t.path())?
+                    .flatten()
+                    .map(|f| f.file_name().to_string_lossy().into_owned())
+                    .collect();
+                for name in &names {
+                    let Some((stem, ext)) = name.rsplit_once('.') else { continue };
+                    let slugged = format!("{}.{ext}", m3u::slug(stem));
+                    // Literal comparison again: a case-insensitive filesystem says the slug "exists".
+                    if slugged != *name && !names.contains(&slugged) {
+                        std::fs::rename(t.path().join(name), t.path().join(&slugged))?;
+                    }
+                }
+            }
+        }
+        let mut kinds: Vec<String> = self.db().playlists()?.into_iter().map(|p| p.kind).collect();
+        kinds.extend(cfg.listenbrainz.playlists.iter().cloned());
+        kinds.sort();
+        kinds.dedup();
+        for kind in kinds {
+            self.archive_legacy(&kind, &dir.join(format!("{kind}.m3u8")))?;
+        }
+        Ok(())
+    }
+
+    /// The playlist's name on the targets, from `sync.playlist_title`.
+    fn title(&self, kind: &str) -> String {
+        self.config.sync.playlist_title.replace("{name}", &display_name(kind)).replace("{kind}", kind)
+    }
+
     /// Rewrite the m3u8 of every playlist (or of `only` those ids) at its stored path.
     fn rewrite_m3us(&self, only: Option<&[i64]>) -> Result<()> {
         let playlists = self.db().playlists()?;
@@ -447,7 +574,7 @@ impl App {
         let cfg = &self.config;
 
         // 1. ListenBrainz playlists → DB rows (new tracks resolved through MusicBrainz).
-        let mut fetched: Vec<(i64, String)> = vec![];
+        let mut fetched: Vec<i64> = vec![];
         let lb_playlists = if no_fetch { vec![] } else { self.lb.created_for(&cfg.listenbrainz.user).await? };
         for lb in listenbrainz::newest_per_kind(lb_playlists) {
             if !cfg.listenbrainz.playlists.contains(&lb.kind) || only.as_ref().is_some_and(|k| *k != lb.kind) {
@@ -476,10 +603,9 @@ impl App {
                 };
                 ids.push(id);
             }
-            let pid = self.db().upsert_playlist(&lb.mbid, &lb.title, &lb.kind)?;
+            let pid = self.db().upsert_playlist(&lb.mbid, &lb.title, &lb.kind, lb.date.get(..10).unwrap_or(""))?;
             self.db().set_playlist_tracks(pid, &ids)?;
-            // m3u8 file name: "Weekly Jams 2026-10-05", short and sortable; the LB title stays inside the file.
-            fetched.push((pid, format!("{} {}", display_name(&lb.kind), lb.date.get(..10).unwrap_or("undated"))));
+            fetched.push(pid);
         }
 
         // 2. Download whatever is still wanted, tag it, file it.
@@ -509,34 +635,34 @@ impl App {
             }
         }
 
-        // 3. m3u per playlist, then push: every playlist fetched above, plus any existing one
-        // that just gained a track (the `--no-fetch` case), rewritten at its stored path.
+        // 3. One current m3u8 per kind ("weekly-jams.m3u8"), replaced on every run; the
+        // playlists it replaces move to archive/<kind>/<period>.m3u8. Then push the current one.
+        // Kinds touched: those fetched above, plus any whose playlist just gained a track (the
+        // `--no-fetch` case).
+        self.migrate_playlist_dir(tx).await?;
         let playlists = self.db().playlists()?;
+        let mut kinds: Vec<&str> = vec![];
         for p in &playlists {
-            let tracks = self.db().playlist_tracks(p.id)?;
-            let stored = p.m3u_path.as_deref().map(Path::new);
-            let (dir, stem) = match fetched.iter().find(|(pid, _)| *pid == p.id) {
-                Some((_, stem)) => (cfg.playlist_dir(), stem.clone()),
-                None if tracks.iter().any(|t| done_ids.contains(&t.id)) => match stored {
-                    Some(m) => match (m.parent(), m.file_stem().and_then(|s| s.to_str())) {
-                        (Some(d), Some(s)) => (d.to_path_buf(), s.to_string()),
-                        _ => continue,
-                    },
-                    None => continue,
-                },
-                None => continue,
-            };
-            let file = m3u::write(&dir, &cfg.library, &stem, &p.name, &tracks)?;
-            // Renamed since last time (naming scheme change): don't leave the stale copy behind.
-            if let Some(old) = p.m3u_path.as_deref().map(Path::new)
-                && old != file
-            {
-                let _ = std::fs::remove_file(old);
+            let gained = || self.db().playlist_tracks(p.id).map(|ts| ts.iter().any(|t| done_ids.contains(&t.id)));
+            if (fetched.contains(&p.id) || gained()?) && !kinds.contains(&p.kind.as_str()) {
+                kinds.push(&p.kind);
             }
-            self.db().set_playlist_m3u(p.id, &file.to_string_lossy())?;
+        }
+        for kind in kinds {
+            // `playlists()` is newest first, so the first row of a kind is the current one.
+            let mut rows = playlists.iter().filter(|p| p.kind == kind);
+            let Some(cur) = rows.next() else { continue };
+            for old in rows {
+                let archived = self.archive(old)?;
+                self.db().set_playlist_m3u(old.id, &archived.to_string_lossy())?;
+            }
+            let tracks = self.db().playlist_tracks(cur.id)?;
+            let file = m3u::write(&cfg.playlist_dir(), &cfg.library, kind, &cur.name, &tracks)?;
+            self.remove_stale(cur, &file);
+            self.db().set_playlist_m3u(cur.id, &file.to_string_lossy())?;
             info(tx, format!("wrote {}", file.display())).await?;
             if !no_push {
-                self.push(p, None, tx).await?;
+                self.push(cur, None, tx).await?;
             }
         }
         info(tx, format!("{done} downloaded, {failed} failed")).await?;
@@ -551,8 +677,7 @@ impl App {
             .iter()
             .filter_map(|t| t.path.as_ref().map(|rel| self.config.library.join(rel)))
             .collect();
-        let title =
-            self.config.sync.playlist_title.replace("{name}", &display_name(&p.kind)).replace("{kind}", &p.kind);
+        let title = self.title(&p.kind);
         for target in self.targets.iter().filter(|t| only.is_none_or(|o| o == t.name())) {
             match target.sync_playlist(&title, &files).await {
                 Ok(remote) => {
@@ -639,6 +764,15 @@ fn new_track<'a>(recording_mbid: &'a str, r: &'a Recording) -> NewTrack<'a> {
 }
 
 /// "weekly-jams" → "Weekly Jams". Stable across weeks, which is what you want as a Plex playlist name.
+/// First `YYYY-MM-DD` in a ListenBrainz title ("Weekly Jams for rob, week of 2026-10-05 Mon").
+fn date_in(title: &str) -> Option<String> {
+    let b = title.as_bytes();
+    (0..b.len().saturating_sub(9))
+        .map(|i| &title[i..i + 10])
+        .find(|w| w.bytes().enumerate().all(|(i, c)| if matches!(i, 4 | 7) { c == b'-' } else { c.is_ascii_digit() }))
+        .map(str::to_string)
+}
+
 fn display_name(kind: &str) -> String {
     kind.split('-')
         .map(|w| {
@@ -661,6 +795,8 @@ async fn data(tx: &Sender<Event>, data: Value) -> Result<()> {
 mod tests {
     #[test]
     fn display_name_title_cases_kind() {
+        assert_eq!(super::date_in("Weekly Jams for rob, week of 2026-10-05 Mon"), Some("2026-10-05".into()));
+        assert_eq!(super::date_in("Daily Jams"), None);
         assert_eq!(super::display_name("weekly-jams"), "Weekly Jams");
         assert_eq!(super::display_name("daily-jams"), "Daily Jams");
     }

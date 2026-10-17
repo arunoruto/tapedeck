@@ -55,7 +55,7 @@ every few hours.
 ```
  ListenBrainz ──▶ MusicBrainz ──▶ yt-dlp ──▶ tags ──▶ Artist/Album (Year)/01 - Title.opus
    playlists        metadata      audio      lofty           │
-                                                             ├──▶ Playlists/*.m3u8
+                                                             ├──▶ playlists/*.m3u8
                                                              └──▶ Plex playlist
 ```
 
@@ -73,8 +73,8 @@ binary is called `td`.
   Consistent artist, album, year and track number, and a hard guarantee against duplicates.
 - **Tags written by tapedeck**, not by whatever the download site had. Album artist and
   track artist are kept apart, so featured guests don't split an album across folders.
-- **An m3u8 for every fetched playlist**, one per week. Your recommendation history,
-  readable by any player, no tapedeck required.
+- **An m3u8 per playlist**, kept in step with the playlist on Plex and readable by any player,
+  with last week's copy archived. Tracks that drop out of a playlist stay in your library.
 - **Downloads matched by length** against the MusicBrainz recording, so you get the album
   audio rather than the music video with the two-minute intro.
 - **Plex sync** that scans the library, matches files and recreates the playlist.
@@ -194,9 +194,12 @@ After a sync the library looks like this:
 ├── Bonobo/
 │   └── Fragments (2022)/
 │       └── 06 - Polyghost.opus
-└── Playlists/
-    ├── Weekly Jams 2026-10-13.m3u8
-    └── Weekly Exploration 2026-10-13.m3u8
+└── playlists/
+    ├── weekly-jams.m3u8
+    ├── weekly-exploration.m3u8
+    └── archive/
+        └── weekly-jams/
+            └── 2026-w41.m3u8
 ```
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>

@@ -34,6 +34,8 @@ pub struct Playlist {
     pub name: String,
     pub kind: String,
     pub m3u_path: Option<String>,
+    /// The ListenBrainz playlist date (YYYY-MM-DD); rows from before the column exists have none.
+    pub date: Option<String>,
     pub fetched_at: String,
     pub track_count: i64,
     pub synced: Vec<SyncRecord>,
@@ -98,8 +100,10 @@ impl Db {
         conn.execute_batch(include_str!("schema.sql"))?;
         // Columns added after the first release. CREATE TABLE IF NOT EXISTS leaves existing
         // databases alone, so add them here and ignore "duplicate column".
-        for col in ["artist_mbid TEXT", "duration_ms INTEGER"] {
-            if let Err(e) = conn.execute(&format!("ALTER TABLE tracks ADD COLUMN {col}"), [])
+        for (table, col) in
+            [("tracks", "artist_mbid TEXT"), ("tracks", "duration_ms INTEGER"), ("playlists", "date TEXT")]
+        {
+            if let Err(e) = conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {col}"), [])
                 && !e.to_string().contains("duplicate column")
             {
                 return Err(e.into());
@@ -211,11 +215,12 @@ impl Db {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
-    pub fn upsert_playlist(&self, lb_mbid: &str, name: &str, kind: &str) -> Result<i64> {
+    pub fn upsert_playlist(&self, lb_mbid: &str, name: &str, kind: &str, date: &str) -> Result<i64> {
         Ok(self.0.query_row(
-            "INSERT INTO playlists (lb_mbid, name, kind) VALUES (?1, ?2, ?3)
-             ON CONFLICT(lb_mbid) DO UPDATE SET name = excluded.name, fetched_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') RETURNING id",
-            params![lb_mbid, name, kind],
+            "INSERT INTO playlists (lb_mbid, name, kind, date) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(lb_mbid) DO UPDATE SET name = excluded.name, date = excluded.date,
+                 fetched_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') RETURNING id",
+            params![lb_mbid, name, kind, date],
             |r| r.get(0),
         )?)
     }
@@ -235,6 +240,11 @@ impl Db {
         Ok(())
     }
 
+    pub fn clear_playlist_m3u(&self, playlist_id: i64) -> Result<()> {
+        self.0.execute("UPDATE playlists SET m3u_path = NULL WHERE id = ?1", [playlist_id])?;
+        Ok(())
+    }
+
     pub fn playlist_tracks(&self, playlist_id: i64) -> Result<Vec<Track>> {
         self.query_tracks(
             &format!("{TRACK_SELECT} JOIN playlist_tracks pt ON pt.track_id = t.id WHERE pt.playlist_id = ?1 ORDER BY pt.position"),
@@ -245,7 +255,7 @@ impl Db {
     pub fn playlists(&self) -> Result<Vec<Playlist>> {
         let mut st = self.0.prepare(
             "SELECT p.id, p.lb_mbid, p.name, p.kind, p.m3u_path, p.fetched_at,
-                    (SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = p.id)
+                    (SELECT COUNT(*) FROM playlist_tracks WHERE playlist_id = p.id), p.date
              FROM playlists p ORDER BY p.fetched_at DESC, p.id DESC",
         )?;
         let mut out: Vec<Playlist> = st
@@ -258,6 +268,7 @@ impl Db {
                     m3u_path: r.get(4)?,
                     fetched_at: r.get(5)?,
                     track_count: r.get(6)?,
+                    date: r.get(7)?,
                     synced: vec![],
                 })
             })?
@@ -326,8 +337,8 @@ mod tests {
         assert_eq!(db.insert_track(&new).unwrap(), id, "same recording MBID must not create a second row");
         assert_eq!(db.wanted_tracks().unwrap().len(), 1);
 
-        let pid = db.upsert_playlist("pl-1", "Weekly Jams for u, week of X", "weekly-jams").unwrap();
-        assert_eq!(db.upsert_playlist("pl-1", "renamed", "weekly-jams").unwrap(), pid);
+        let pid = db.upsert_playlist("pl-1", "Weekly Jams for u, week of X", "weekly-jams", "2026-10-05").unwrap();
+        assert_eq!(db.upsert_playlist("pl-1", "renamed", "weekly-jams", "2026-10-05").unwrap(), pid);
         db.set_playlist_tracks(pid, &[id]).unwrap();
         db.mark_ready(id, "A/Album (2020)/03 - Title.opus", Some("https://y/v")).unwrap();
 
