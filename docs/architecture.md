@@ -131,6 +131,10 @@ unless told otherwise, and first writes each playlist as an m3u8 (local paths) p
 sidecar under `<playlist_dir>/backup/<target>/<slug>.m3u8` (the real title stays in the JSON); `td remote backup` does only that, and
 `td remote restore FILE.json` recreates a playlist from the sidecar.
 
+Long loops (import's resolving pass, refile) report a `progress` event per item. On a terminal
+it overwrites itself on one line; in a pipe or the journal it is dropped; with `--json` it is one
+more NDJSON line, so a script can show its own counter.
+
 ## TUI
 
 `td tui` (and plain `td`) opens the database directly (no daemon round-trip) and fetches each

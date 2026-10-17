@@ -28,11 +28,21 @@ async fn main() -> Result<()> {
     let worker = tokio::spawn(async move { daemon::dispatch(&config, cmd, tx).await });
 
     let mut failed = false;
+    // Progress lines overwrite each other on a terminal and are dropped from logs/pipes.
+    let tty = std::io::IsTerminal::is_terminal(&std::io::stderr());
+    let mut progressing = false;
     while let Some(ev) = rx.recv().await {
         if cli.json {
             println!("{}", serde_json::to_string(&ev)?);
+        } else if progressing && !matches!(ev, Event::Progress { .. }) {
+            eprint!("\r\x1b[2K");
+            progressing = false;
         }
         match ev {
+            Event::Progress { msg } if !cli.json && tty => {
+                eprint!("\r\x1b[2K{msg}");
+                progressing = true;
+            }
             Event::Info { msg } if !cli.json => eprintln!("{msg}"),
             Event::Data { data } if !cli.json => println!("{}", tapedeck::render::render(&data)),
             Event::Error { msg } => {
@@ -43,6 +53,9 @@ async fn main() -> Result<()> {
             }
             _ => {}
         }
+    }
+    if progressing {
+        eprintln!();
     }
     worker.await??;
     if failed {

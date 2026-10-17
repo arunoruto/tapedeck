@@ -25,9 +25,19 @@ use crate::{
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Event {
-    Info { msg: String },
-    Data { data: Value },
-    Error { msg: String },
+    Info {
+        msg: String,
+    },
+    /// A counter that replaces the previous one on a terminal ("resolving 812/1582 …").
+    Progress {
+        msg: String,
+    },
+    Data {
+        data: Value,
+    },
+    Error {
+        msg: String,
+    },
 }
 
 pub struct App {
@@ -179,7 +189,7 @@ impl App {
         let total = tracks.len();
         let (mut moved, mut failed) = (0, 0);
         for (i, t) in tracks.iter().enumerate() {
-            info(tx, format!("checking {}/{total}: {} - {}", i + 1, t.artist, t.title)).await?;
+            progress(tx, format!("checking {}/{total}: {} - {}", i + 1, t.artist, t.title)).await?;
             let r = match self.mb.recording(&t.recording_mbid).await {
                 Ok(r) => r,
                 Err(e) => {
@@ -358,11 +368,28 @@ impl App {
         let mut index: HashMap<String, usize> = HashMap::new();
         // Files the search could not place; `None` is no match, `Some` a failed lookup.
         let mut pending: Vec<(&library::Found, Option<anyhow::Error>)> = vec![];
-        for f in &found {
+        let (mut by_tag, mut by_search) = (0, 0);
+        for (i, f) in found.iter().enumerate() {
+            progress(
+                tx,
+                format!(
+                    "resolving {}/{} (tag {by_tag}, search {by_search}, unplaced {})",
+                    i + 1,
+                    found.len(),
+                    pending.len()
+                ),
+            )
+            .await?;
             let mbid = match &f.recording_mbid {
-                Some(m) => m.clone(),
+                Some(m) => {
+                    by_tag += 1;
+                    m.clone()
+                }
                 None => match self.mb.search_recording(&f.artist, &f.title, f.duration_ms).await {
-                    Ok(Some(m)) => m,
+                    Ok(Some(m)) => {
+                        by_search += 1;
+                        m
+                    }
                     Ok(None) => {
                         pending.push((f, None));
                         continue;
@@ -928,6 +955,10 @@ fn display_name(kind: &str) -> String {
 
 async fn info(tx: &Sender<Event>, msg: String) -> Result<()> {
     tx.send(Event::Info { msg }).await.context("client went away")
+}
+
+async fn progress(tx: &Sender<Event>, msg: String) -> Result<()> {
+    tx.send(Event::Progress { msg }).await.context("client went away")
 }
 
 async fn data(tx: &Sender<Event>, data: Value) -> Result<()> {

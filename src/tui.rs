@@ -85,6 +85,8 @@ struct Tui {
     /// The running action, if any, and its event stream.
     job: Option<(JoinHandle<()>, mpsc::Receiver<TdEvent>)>,
     log: Vec<String>,
+    /// The last log line is a progress counter and gets replaced by the next one.
+    progressing: bool,
     ticks: usize,
     /// Library tab. The three columns are derived from `all` on every draw, see `shelf`.
     all: Vec<Track>,
@@ -126,6 +128,7 @@ pub async fn run(config: Config) -> Result<()> {
         status: String::new(),
         job: None,
         log: vec![],
+        progressing: false,
         ticks: 0,
         all: vec![],
         artists: ListState::default().with_selected(Some(0)),
@@ -283,13 +286,24 @@ impl Tui {
         let Some((handle, rx)) = &mut self.job else { return Ok(()) };
         while let Ok(ev) = rx.try_recv() {
             match ev {
-                TdEvent::Info { msg } => self.log.push(msg),
+                TdEvent::Info { msg } => {
+                    self.progressing = false;
+                    self.log.push(msg);
+                }
+                TdEvent::Progress { msg } => {
+                    if self.progressing {
+                        self.log.pop();
+                    }
+                    self.progressing = true;
+                    self.log.push(msg);
+                }
                 TdEvent::Error { msg } => self.log.push(format!("error: {msg}")),
                 TdEvent::Data { data } => self.log.extend(render::render(&data).lines().map(str::to_string)),
             }
         }
         if handle.is_finished() {
             self.job = None;
+            self.progressing = false;
             self.log.push("done".into());
             self.refresh()?;
         }

@@ -72,7 +72,7 @@ pub async fn serve(cfg: Config) -> Result<()> {
                 match ev {
                     Event::Error { msg } => tracing::error!("{msg}"),
                     Event::Info { msg } => tracing::info!("{msg}"),
-                    Event::Data { .. } => {}
+                    Event::Data { .. } | Event::Progress { .. } => {}
                 }
             }
             tokio::time::sleep(interval).await;
