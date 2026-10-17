@@ -94,6 +94,38 @@ impl App {
                 let tracks = self.db().search(&query)?;
                 data(tx, json!(tracks)).await
             }
+            Command::Artists => {
+                let artists = self.db().artists()?;
+                data(tx, json!(artists)).await
+            }
+            Command::Artist { artist, folder, unpin } => {
+                let all = self.db().artists()?;
+                let key = artist.to_lowercase();
+                let hit = all
+                    .iter()
+                    .find(|a| a.mbid == artist)
+                    .or_else(|| {
+                        all.iter().find(|a| {
+                            a.name.to_lowercase() == key || a.folder.as_deref().is_some_and(|f| f.to_lowercase() == key)
+                        })
+                    })
+                    .with_context(|| format!("no artist {artist:?}; see `td artists`"))?;
+                match (folder, unpin) {
+                    (Some(f), _) => {
+                        self.db().set_artist_folder(hit.id, Some(f.trim()))?;
+                        info(
+                            tx,
+                            format!("{} files under {:?} from now on; `td refile` moves the files", hit.name, f.trim()),
+                        )
+                        .await
+                    }
+                    (None, true) => {
+                        self.db().set_artist_folder(hit.id, None)?;
+                        info(tx, format!("{} follows MusicBrainz again; `td refile` moves the files", hit.name)).await
+                    }
+                    (None, false) => data(tx, json!(hit)).await,
+                }
+            }
             Command::Playlists => {
                 let playlists = self.db().playlists()?;
                 data(tx, json!(playlists)).await
@@ -238,6 +270,7 @@ impl App {
         let total = tracks.len();
         let (mut moved, mut retagged, mut failed) = (0, 0, 0);
         let mut moves: HashMap<PathBuf, PathBuf> = HashMap::new();
+        let names_before = self.db().artist_names()?;
         for (i, t) in tracks.iter().enumerate() {
             progress(tx, format!("checking {}/{total}: {} - {}", i + 1, t.artist, t.title)).await?;
             let r = match self.mb.recording(&t.recording_mbid).await {
@@ -257,7 +290,11 @@ impl App {
                 true => Track {
                     title: r.title.clone(),
                     artist: r.artist.clone(),
-                    album_artist: r.album_artist.clone(),
+                    // A pinned folder name wins over MusicBrainz's, as it does when read back.
+                    album_artist: self
+                        .db()
+                        .artist_folder(&r.album_artist_mbid)?
+                        .unwrap_or_else(|| r.album_artist.clone()),
                     album: r.album.clone(),
                     year: r.year,
                     track_no: r.track_no,
@@ -287,6 +324,15 @@ impl App {
         }
         let verb = if dry_run { "would move" } else { "moved" };
         self.follow_moves(&moves, tx).await?;
+        // Artists MusicBrainz renamed since we last looked; the moves above already follow.
+        if !dry_run {
+            let after = self.db().artists()?;
+            for a in after.iter().filter(|a| names_before.get(&a.id).is_some_and(|old| *old != a.name)) {
+                let pinned = a.folder.as_deref().map(|f| format!(" (folder pinned to {f:?})")).unwrap_or_default();
+                info(tx, format!("artist renamed on MusicBrainz: {} → {}{pinned}", names_before[&a.id], a.name))
+                    .await?;
+            }
+        }
         let retag = if dry_run { String::new() } else { format!(", {retagged} retagged") };
         info(tx, format!("{total} tracks checked, {moved} {verb}{retag}, {failed} failed")).await?;
         ensure!(failed == 0, "{failed} MusicBrainz lookups failed; run again later");

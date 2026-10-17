@@ -200,7 +200,7 @@ cannot be deleted from here: they mirror ListenBrainz and would come back on the
 ## Data model
 
 ```
-artists         id, mbid, name
+artists         id, mbid, name, folder
 albums          id, mbid, artist_id, title, year
 tracks          id, recording_mbid, album_id, title, artist, artist_mbid, track_no, duration_ms,
                 path, status, source_url, error
@@ -247,10 +247,16 @@ playlists do.
 machine-readable dump when needed.
 
 **Track artist and album artist are stored separately.** `tracks.artist` is the
-recording's credit (`Bonobo feat. Nicole Miglis`); `artists` holds the release's credit
-(`Bonobo`) and is what albums hang off. The album artist is the name as credited on the
-chosen release, not the artist entity's current name: MusicBrainz renames entities (Miley
-Cyrus became "MILEY" in 2026) and following that would re-file a whole back catalogue. Filing by `{album_artist}` keeps an album in one
+recording's credit (`Bonobo feat. Nicole Miglis`); `artists` holds the artist entity
+(`Bonobo`, by MusicBrainz id) and is what albums hang off.
+
+**Artist folders follow the MusicBrainz entity, with a per-artist pin.** Bands rename
+(Eskimo Callboy → Electric Callboy) and a folder per spelling is the thing nobody wants, so the
+folder name is the entity's current name, refreshed on every lookup; `td refile` reports
+"artist renamed on MusicBrainz: X → Y" and moves the files. When the entity name is not what
+belongs on disk (Miley Cyrus became "MILEY" in 2026), `td artist "MILEY" --folder "Miley Cyrus"`
+pins a name for that artist (`--unpin` follows MusicBrainz again); `td artists` lists both
+columns. Pins live in `artists.folder` and win everywhere the album artist is rendered. Filing by `{album_artist}` keeps an album in one
 folder even when half its tracks have guests.
 
 **Plex playlists are recreated, not diffed.** Deleting and recreating is a handful of

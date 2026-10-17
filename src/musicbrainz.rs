@@ -194,7 +194,7 @@ pub fn parse_recording(v: &Value, mbid: &str) -> Result<Recording> {
     let releases = v["releases"].as_array().cloned().unwrap_or_default();
     let release = releases.iter().min_by_key(|r| release_rank(r, &artist_mbid)).cloned().unwrap_or(Value::Null);
     let (album_artist, album_artist_mbid) = match &release["artist-credit"] {
-        Value::Array(a) if !a.is_empty() => credit(&release["artist-credit"]),
+        Value::Array(a) if !a.is_empty() => canonical_credit(&release["artist-credit"]),
         _ => (artist.clone(), artist_mbid.clone()),
     };
     let year = release["date"].as_str().and_then(|d| d.get(..4)).and_then(|y| y.parse().ok());
@@ -225,10 +225,14 @@ fn credit(v: &Value) -> (String, String) {
     credit_with(v, |c| c["name"].as_str())
 }
 
-// The album artist is the name as credited on the chosen release, not the artist entity's
-// current name: MusicBrainz renames entities (Miley Cyrus is "MILEY" since 2026) and that would
-// re-file a whole back catalogue. Odd-script credits ("ザ・チェインスモーカーズ") sit on regional
-// editions, which `release_rank` already avoids.
+/// Same, but with each artist's current entity name instead of the credited spelling, so a
+/// Japanese edition credited to "ザ・チェインスモーカーズ" still files under "The Chainsmokers" and a
+/// renamed band (Eskimo Callboy → Electric Callboy) gets one folder. When the entity name is not
+/// what someone wants on disk (Miley Cyrus became "MILEY"), `td artist … --folder` pins a name.
+fn canonical_credit(v: &Value) -> (String, String) {
+    credit_with(v, |c| c["artist"]["name"].as_str().or(c["name"].as_str()))
+}
+
 fn credit_with(v: &Value, name: impl Fn(&Value) -> Option<&str>) -> (String, String) {
     let credits = v.as_array().cloned().unwrap_or_default();
     let name = credits
@@ -311,7 +315,7 @@ mod tests {
         ]);
         let r = parse_recording(&v, "rec").unwrap();
         assert_eq!(r.album_mbid, "pablo-honey", "earlier Japan edition loses to the plain album");
-        assert_eq!(r.album_artist, "credited-as", "as credited on the chosen release, not the entity's current name");
+        assert_eq!(r.album_artist, "radiohead", "the entity's current name, not the credited spelling");
         assert_eq!((r.year, r.track_no, r.length_ms), (Some(1993), Some(7), Some(238000)));
         assert_eq!(r.artist_mbid.as_deref(), Some("radiohead"));
     }
@@ -340,7 +344,7 @@ mod tests {
         });
         let r = parse_recording(&v, "rec").unwrap();
         assert_eq!(r.artist, "Bonobo feat. Nicole Miglis");
-        assert_eq!((r.album_artist.as_str(), r.album_artist_mbid.as_str()), ("credited-as", "bonobo-id"));
+        assert_eq!((r.album_artist.as_str(), r.album_artist_mbid.as_str()), ("bonobo-id", "bonobo-id"));
     }
 
     #[test]

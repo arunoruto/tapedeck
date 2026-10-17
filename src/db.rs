@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -5,6 +6,17 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::Serialize;
 
 pub struct Db(Connection);
+
+#[derive(Serialize, Clone, Debug)]
+pub struct Artist {
+    pub id: i64,
+    pub mbid: String,
+    /// The name MusicBrainz currently gives the artist entity.
+    pub name: String,
+    /// A folder name pinned by the user, used instead of `name` when set.
+    pub folder: Option<String>,
+    pub tracks: i64,
+}
 
 #[derive(Serialize, Clone, Debug, Default)]
 pub struct Track {
@@ -64,7 +76,7 @@ pub struct NewTrack<'a> {
 }
 
 const TRACK_SELECT: &str = "
-    SELECT t.id, t.recording_mbid, t.title, t.artist, ar.name, al.title, al.year, t.track_no,
+    SELECT t.id, t.recording_mbid, t.title, t.artist, COALESCE(ar.folder, ar.name), al.title, al.year, t.track_no,
            t.path, t.status, t.source_url, t.error, t.artist_mbid, al.mbid, ar.mbid, t.duration_ms
     FROM tracks t
     JOIN albums al ON al.id = t.album_id
@@ -100,9 +112,12 @@ impl Db {
         conn.execute_batch(include_str!("schema.sql"))?;
         // Columns added after the first release. CREATE TABLE IF NOT EXISTS leaves existing
         // databases alone, so add them here and ignore "duplicate column".
-        for (table, col) in
-            [("tracks", "artist_mbid TEXT"), ("tracks", "duration_ms INTEGER"), ("playlists", "date TEXT")]
-        {
+        for (table, col) in [
+            ("tracks", "artist_mbid TEXT"),
+            ("tracks", "duration_ms INTEGER"),
+            ("playlists", "date TEXT"),
+            ("artists", "folder TEXT"),
+        ] {
             if let Err(e) = conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {col}"), [])
                 && !e.to_string().contains("duplicate column")
             {
@@ -186,6 +201,42 @@ impl Db {
 
     pub fn mark_failed(&self, id: i64, error: &str) -> Result<()> {
         self.0.execute("UPDATE tracks SET status = 'failed', error = ?2 WHERE id = ?1", params![id, error])?;
+        Ok(())
+    }
+
+    /// Album artists with their MusicBrainz name, pinned folder name (if any) and track count.
+    pub fn artists(&self) -> Result<Vec<Artist>> {
+        let mut st = self.0.prepare(
+            "SELECT ar.id, ar.mbid, ar.name, ar.folder,
+                    (SELECT COUNT(*) FROM tracks t JOIN albums al ON al.id = t.album_id WHERE al.artist_id = ar.id)
+             FROM artists ar
+             WHERE EXISTS (SELECT 1 FROM tracks t JOIN albums al ON al.id = t.album_id WHERE al.artist_id = ar.id)
+             ORDER BY LOWER(COALESCE(ar.folder, ar.name))",
+        )?;
+        let rows = st.query_map([], |r| {
+            Ok(Artist { id: r.get(0)?, mbid: r.get(1)?, name: r.get(2)?, folder: r.get(3)?, tracks: r.get(4)? })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Names as MusicBrainz has them right now, by artist id: for spotting renames.
+    pub fn artist_names(&self) -> Result<HashMap<i64, String>> {
+        let mut st = self.0.prepare("SELECT id, name FROM artists")?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    pub fn artist_folder(&self, mbid: &str) -> Result<Option<String>> {
+        Ok(self
+            .0
+            .query_row("SELECT folder FROM artists WHERE mbid = ?1", [mbid], |r| r.get::<_, Option<String>>(0))
+            .optional()?
+            .flatten())
+    }
+
+    /// Pin (or with `None` unpin) the folder name used for an artist instead of MusicBrainz's.
+    pub fn set_artist_folder(&self, id: i64, folder: Option<&str>) -> Result<()> {
+        self.0.execute("UPDATE artists SET folder = ?2 WHERE id = ?1", params![id, folder])?;
         Ok(())
     }
 

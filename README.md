@@ -171,6 +171,7 @@ Everything else has a default. The full reference is in
 | `td status` | Track counts by status (`wanted` / `ready` / `failed`) |
 | `td search QUERY` | Search the library by artist, album or title |
 | `td playlists` | Fetched playlists and where they've been synced |
+| `td artists` / `td artist NAME --folder F` | Album artists as MusicBrainz names them now; pin a folder name where you disagree |
 | `td push PLAYLIST\|FILE.m3u8 [--to TARGET] [--title T]` | Push a fetched playlist, or any m3u8 file (archive, backup, your own); a same-titled remote copy is backed up and replaced |
 | `td unpush NAME\|FILE.m3u8 [--to TARGET] --yes` | Remove a playlist from a target, backup first; the local file is never touched |
 | `td retry [ID]` | Reset failed downloads so the next sync tries again; with an id, re-download that one track |

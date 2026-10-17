@@ -46,6 +46,21 @@ pub enum Command {
     Search { query: String },
     /// Playlists and where they have been synced.
     Playlists,
+    /// Album artists: the name MusicBrainz gives them now, the folder name pinned here (if any),
+    /// and how many tracks each has.
+    Artists,
+    /// Pin the folder name for one artist, for when MusicBrainz's current name is not what you
+    /// want on disk ("MILEY"). The next `td refile` moves the files.
+    Artist {
+        /// Artist name (as listed by `td artists`) or MusicBrainz id.
+        artist: String,
+        /// Folder name to use instead of MusicBrainz's.
+        #[arg(long, conflicts_with = "unpin")]
+        folder: Option<String>,
+        /// Follow MusicBrainz again.
+        #[arg(long)]
+        unpin: bool,
+    },
     /// Push a playlist to the sync targets: a fetched one by id or kind, or any .m3u8 file
     /// (the archive, a backup, your own). A same-titled remote playlist is backed up, then replaced.
     Push {

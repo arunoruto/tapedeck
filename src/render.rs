@@ -15,6 +15,8 @@ const COLUMNS: &[&str] = &[
     "year",
     "track_no",
     "name",
+    "folder",
+    "mbid",
     "track_count",
     "tracks",
     "smart",
