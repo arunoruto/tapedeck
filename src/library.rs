@@ -185,6 +185,25 @@ fn inspect(path: &Path) -> Found {
     let mut duration_ms = None;
     if let Ok(file) = Probe::open(path).and_then(|p| p.read()) {
         duration_ms = Some(file.properties().duration().as_millis() as i64);
+        // Picard writes MUSICBRAINZ_TRACKID / a UFID frame, Explo writes ID3 TXXX frames called
+        // "MusicBrainz Track Id" or "MusicBrainz_TrackId"; all of them hold the recording MBID.
+        let find_mbid = |tag: &lofty::tag::Tag| {
+            tag.items().find_map(|item| {
+                let key: String =
+                    format!("{:?}", item.key()).to_lowercase().chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+                if !key.contains("musicbrainztrackid") && !key.contains("musicbrainzrecordingid") {
+                    return None;
+                }
+                let v = match item.value() {
+                    ItemValue::Text(s) | ItemValue::Locator(s) => s.clone(),
+                    ItemValue::Binary(b) => String::from_utf8_lossy(b).into_owned(),
+                };
+                find_uuid(&v)
+            })
+        };
+        // Try every tag in the file, not just the primary one: some files carry the MBID only
+        // in an APE or ID3v2.3 tag beside an empty newer one.
+        recording_mbid = file.tags().iter().find_map(find_mbid);
         if let Some(tag) = file.primary_tag() {
             if let Some(a) = tag.artist() {
                 artist = a.to_string();
@@ -192,23 +211,14 @@ fn inspect(path: &Path) -> Found {
             if let Some(t) = tag.title() {
                 title = t.to_string();
             }
-            // Picard writes MUSICBRAINZ_TRACKID / a UFID frame, Explo writes ID3 TXXX frames called
-            // "MusicBrainz Track Id" or "MusicBrainz_TrackId"; all of them hold the recording MBID.
-            recording_mbid = tag.items().find_map(|item| {
-                let key: String =
-                    format!("{:?}", item.key()).to_lowercase().chars().filter(|c| c.is_ascii_alphanumeric()).collect();
-                if !key.contains("musicbrainztrackid") && !key.contains("musicbrainzrecordingid") {
-                    return None;
-                }
-                let v = match item.value() {
-                    ItemValue::Text(s) | ItemValue::Locator(s) => s.trim().to_string(),
-                    ItemValue::Binary(b) => String::from_utf8(b.clone()).ok()?.trim().to_string(),
-                };
-                is_uuid(&v).then_some(v)
-            });
         }
     }
     Found { path: path.to_path_buf(), artist, title, recording_mbid, duration_ms }
+}
+
+/// The first UUID anywhere in `s` (values may carry NULs, braces or a second value).
+fn find_uuid(s: &str) -> Option<String> {
+    (0..s.len().saturating_sub(35)).filter_map(|i| s.get(i..i + 36)).find(|w| is_uuid(w)).map(str::to_string)
 }
 
 fn is_uuid(s: &str) -> bool {
@@ -259,6 +269,8 @@ mod tests {
         assert_eq!(parse_stem("Apricots"), (String::new(), "Apricots".into()));
         assert!(is_uuid("5dcf0f17-d13b-47c1-8386-fea1f5e25875"));
         assert!(!is_uuid("not-an-id"));
+        assert_eq!(find_uuid("{5dcf0f17-d13b-47c1-8386-fea1f5e25875}\0"), Some("5dcf0f17-d13b-47c1-8386-fea1f5e25875".into()));
+        assert_eq!(find_uuid("5dcf0f17"), None);
         assert!(render_template("{nope}", &t, "opus").is_err());
         assert!(validate_template("{artist}/{title}.{ext}").is_ok());
     }

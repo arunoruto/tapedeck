@@ -12,8 +12,9 @@ pub struct Cli {
     /// Config file (default: $XDG_CONFIG_HOME/tapedeck/config.toml).
     #[arg(long, global = true, env = "TAPEDECK_CONFIG")]
     pub config: Option<PathBuf>,
+    /// Without a subcommand, `td` opens the TUI.
     #[command(subcommand)]
-    pub cmd: Command,
+    pub cmd: Option<Command>,
 }
 
 /// The CLI surface doubles as the socket protocol: a client sends one of these
@@ -23,7 +24,7 @@ pub struct Cli {
 pub enum Command {
     /// Run as a service: listen on the socket and sync on an interval.
     Daemon,
-    /// Browse playlists and tracks in the terminal (read-only).
+    /// Browse the library and playlists in the terminal (read-only). Also what plain `td` does.
     Tui,
     /// Fetch ListenBrainz playlists, download missing tracks, write m3u files, push to sync targets.
     Sync {

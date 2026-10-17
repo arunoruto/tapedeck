@@ -18,15 +18,13 @@ async fn main() -> Result<()> {
     let cli = Cli::parse();
     let config = Config::load(cli.config.as_deref())?;
 
-    if let Command::Daemon = cli.cmd {
-        return daemon::serve(config).await;
-    }
-    if let Command::Tui = cli.cmd {
-        return tapedeck::tui::run(config).await;
-    }
+    let cmd = match cli.cmd {
+        None | Some(Command::Tui) => return tapedeck::tui::run(config).await,
+        Some(Command::Daemon) => return daemon::serve(config).await,
+        Some(cmd) => cmd,
+    };
 
     let (tx, mut rx) = mpsc::channel(64);
-    let cmd = cli.cmd.clone();
     let worker = match daemon::connect(&config).await {
         Some(stream) => tokio::spawn(daemon::forward(stream, cmd, tx)),
         None => {

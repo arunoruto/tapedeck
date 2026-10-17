@@ -16,7 +16,7 @@ src/
   musicbrainz.rs   recording lookup
   download/        Downloader trait, yt-dlp implementation
   sync/            SyncTarget trait, Plex implementation
-  tui.rs           `td tui`: ratatui browser over the database (read-only)
+  tui.rs           `td tui` / plain `td`: ratatui browser over the database (read-only)
   render.rs        tables / key-value lines for human output
 ```
 
@@ -94,9 +94,14 @@ of an hour.
 `td import DIR` is for a folder that predates tapedeck. Each audio file is identified by its
 `MUSICBRAINZ_TRACKID` tag when present, otherwise by a MusicBrainz search on artist and
 title (from tags, else from an `Artist - Title` file name) scored by how close the file's
-length is to the recording's. A recording the library already has makes the file a
-duplicate: reported, or deleted with `--apply --delete-duplicates`. Anything else is filed
-exactly like a download would be. The default is a dry run; `--apply` moves files.
+length is to the recording's. Files are then grouped by recording, because Explo drops the
+same song into every weekly folder it appears in. A recording the library already has makes
+every copy a duplicate; otherwise the copy closest to the recording's length is filed exactly
+like a download would be and the rest are duplicates. Duplicates are reported, or deleted with
+`--apply --delete-duplicates`. The default is a dry run, which reports the same groups
+`--apply` would act on; `--apply` moves files, and afterwards rewrites any playlist backup
+under `<playlist_dir>/backup` whose paths pointed at files that moved or were deleted, so
+`td remote restore` still finds them.
 
 `td remote ls` and `td remote rm GLOB` talk to the sync targets' own playlist lists, so the
 history another tool left behind (`Weekly-Jams-2026-Week*`) can be cleared without opening
@@ -107,11 +112,14 @@ sidecar under `<playlist_dir>/backup/<target>/`; `td remote backup` does only th
 
 ## TUI
 
-`td tui` opens the database directly (no daemon round-trip) and fetches each sync target's
-playlist list once at start. Left pane: the whole library, local playlists with their sync
-marks, remote playlists dimmed. Right pane: tracks with status, year and length; `/` filters
-by artist, title or album; the bar below shows the selected track's id, path, source URL and
-error. It changes nothing, by design, until the actions (retry, pin a source, push, delete)
+`td tui` (and plain `td`) opens the database directly (no daemon round-trip) and fetches each
+sync target's playlist list once at start. Two tabs. *Library* is a three-column browser,
+artists › albums › songs, regrouped from the track table on every draw (cheap at this size;
+cache it if that ever shows). *Playlists* lists local playlists with their sync marks and remote
+playlists dimmed, with the tracks of the selected one on the right. `/` filters by artist, title
+or album in both tabs; the bar below shows the selected track's id, path, source URL and error.
+Keys follow vim and less: `hjkl`, `^D`/`^U` half page, `^F`/`^B` page, `g`/`G`, `Tab` or `1`/`2`
+for tabs. It changes nothing, by design, until the actions (retry, pin a source, push, delete)
 get confirmation prompts.
 
 ## Data model

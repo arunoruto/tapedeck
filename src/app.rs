@@ -1,6 +1,7 @@
 //! The one place commands are executed, whether invoked locally or through the daemon.
 
 use std::{
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::Mutex,
 };
@@ -250,9 +251,15 @@ impl App {
     ) -> Result<()> {
         let dir = dir.join(target.name());
         std::fs::create_dir_all(&dir)?;
+        // Plex allows two playlists with one title; the second gets its id in the file name.
+        let mut used = HashSet::new();
         for p in hits {
             let items = target.playlist_items(&p.id).await?;
-            let stem = m3u::safe_name(&p.title);
+            let mut stem = m3u::safe_name(&p.title);
+            if !used.insert(stem.clone()) {
+                stem = format!("{stem} [{}]", p.id);
+                used.insert(stem.clone());
+            }
             let entries: Vec<(String, PathBuf)> = items
                 .iter()
                 .filter_map(|i| i.file.clone().map(|f| (format!("{} - {}", i.artist, i.title), f)))
@@ -270,13 +277,18 @@ impl App {
         Ok(())
     }
 
-    /// Resolve files from elsewhere to recordings; file the new ones, report (or delete) the
-    /// ones the library already has.
+    /// Resolve files from elsewhere to recordings; file one copy of each new recording, report
+    /// (or delete) the rest. Backups under `<playlist_dir>/backup` follow the files that moved.
     async fn import(&self, dir: &Path, apply: bool, delete_duplicates: bool, tx: &Sender<Event>) -> Result<()> {
         let cfg = &self.config;
         let found = library::scan(dir)?;
         info(tx, format!("{} audio files under {}", found.len(), dir.display())).await?;
-        let (mut imported, mut duplicates, mut unresolved, mut lookup_failed) = (0, 0, 0, 0);
+        let (mut unresolved, mut lookup_failed) = (0, 0);
+
+        // Pass 1: every file to a recording MBID, grouped in first-seen order. Explo drops the
+        // same track into every playlist folder it appears in, so groups are the norm.
+        let mut groups: Vec<(String, Vec<&library::Found>)> = vec![];
+        let mut index: HashMap<String, usize> = HashMap::new();
         for f in &found {
             let mbid = match &f.recording_mbid {
                 Some(m) => m.clone(),
@@ -294,40 +306,74 @@ impl App {
                     }
                 },
             };
-            // Bind first: a guard inside an `if let` scrutinee would live across the awaits below.
+            match index.get(&mbid) {
+                Some(&i) => groups[i].1.push(f),
+                None => {
+                    index.insert(mbid.clone(), groups.len());
+                    groups.push((mbid, vec![f]));
+                }
+            }
+        }
+
+        // Pass 2: per recording, the library's copy wins; else the file closest to the
+        // recording's length is filed and the others are duplicates.
+        let (mut imported, mut duplicates) = (0, 0);
+        let mut moved: HashMap<PathBuf, PathBuf> = HashMap::new();
+        for (mbid, files) in groups {
             let existing = self.db().track_by_mbid(&mbid)?;
-            if let Some(existing) = existing
-                && existing.status == "ready"
-            {
+            let (kept, label, dest) = match existing {
+                Some(t) if t.status == "ready" => {
+                    (None, format!("{} - {}", t.artist, t.title), t.path.map(|p| cfg.library.join(p)))
+                }
+                _ => {
+                    let r = match self.mb.recording(&mbid).await {
+                        Ok(r) => r,
+                        Err(e) => {
+                            for f in &files {
+                                info(tx, format!("lookup failed: {}: {e:#}", f.path.display())).await?;
+                            }
+                            lookup_failed += files.len();
+                            continue;
+                        }
+                    };
+                    let drift = |f: &&&library::Found| match (f.duration_ms, r.length_ms) {
+                        (Some(a), Some(b)) => (a - b).abs(),
+                        _ => i64::MAX,
+                    };
+                    let best = *files.iter().min_by_key(drift).expect("group has a file");
+                    info(tx, format!("import {} → {} - {} [{}]", best.path.display(), r.artist, r.title, r.album))
+                        .await?;
+                    imported += 1;
+                    let mut dest = None;
+                    if apply {
+                        let id = self.db().insert_track(&new_track(&mbid, &r))?;
+                        let t = self.db().track_by_mbid(&mbid)?.context("track vanished")?;
+                        let rel = library::file_track(&cfg.library, &cfg.path_template, &t, &best.path)?;
+                        self.db().mark_ready(id, &rel.to_string_lossy(), None)?;
+                        let d = cfg.library.join(rel);
+                        moved.insert(best.path.clone(), d.clone());
+                        dest = Some(d);
+                    }
+                    (Some(&best.path), format!("{} - {}", r.artist, r.title), dest)
+                }
+            };
+            for f in files.iter().filter(|f| Some(&f.path) != kept) {
                 duplicates += 1;
                 if apply && delete_duplicates {
                     std::fs::remove_file(&f.path)?;
-                    info(
-                        tx,
-                        format!("deleted duplicate of {} - {}: {}", existing.artist, existing.title, f.path.display()),
-                    )
-                    .await?;
+                    info(tx, format!("deleted duplicate of {label}: {}", f.path.display())).await?;
+                    if let Some(d) = &dest {
+                        moved.insert(f.path.clone(), d.clone());
+                    }
                 } else {
-                    info(tx, format!("duplicate of {} - {}: {}", existing.artist, existing.title, f.path.display()))
-                        .await?;
+                    info(tx, format!("duplicate of {label}: {}", f.path.display())).await?;
                 }
-                continue;
             }
-            let r = match self.mb.recording(&mbid).await {
-                Ok(r) => r,
-                Err(e) => {
-                    info(tx, format!("lookup failed: {}: {e:#}", f.path.display())).await?;
-                    lookup_failed += 1;
-                    continue;
-                }
-            };
-            info(tx, format!("import {} → {} - {} [{}]", f.path.display(), r.artist, r.title, r.album)).await?;
-            imported += 1;
-            if apply {
-                let id = self.db().insert_track(&new_track(&mbid, &r))?;
-                let t = self.db().track_by_mbid(&mbid)?.context("track vanished")?;
-                let rel = library::file_track(&cfg.library, &cfg.path_template, &t, &f.path)?;
-                self.db().mark_ready(id, &rel.to_string_lossy(), None)?;
+        }
+        if !moved.is_empty() {
+            let n = rewrite_backups(&cfg.playlist_dir().join("backup"), &moved)?;
+            if n > 0 {
+                info(tx, format!("updated {n} backup files to point at the moved tracks")).await?;
             }
         }
         let mode = if apply { "" } else { " (dry run; pass --apply to move files)" };
@@ -460,6 +506,53 @@ impl App {
     fn db(&self) -> std::sync::MutexGuard<'_, Db> {
         self.db.lock().unwrap_or_else(|p| p.into_inner())
     }
+}
+
+/// Point backup m3u8/json files under `dir` at the new locations of moved (or deleted-as-duplicate)
+/// files, so `td remote restore` keeps working after an import. Returns how many files changed.
+fn rewrite_backups(dir: &Path, moved: &HashMap<PathBuf, PathBuf>) -> Result<usize> {
+    let mut changed = 0;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else { continue };
+        for entry in entries {
+            let p = entry?.path();
+            if p.is_dir() {
+                stack.push(p);
+                continue;
+            }
+            match p.extension().and_then(|e| e.to_str()) {
+                Some("m3u8") => {
+                    let body = std::fs::read_to_string(&p)?;
+                    let new: String = body
+                        .lines()
+                        .map(|l| moved.get(Path::new(l)).map(|n| n.to_string_lossy().into_owned()).unwrap_or(l.into()))
+                        .map(|l| l + "\n")
+                        .collect();
+                    if new != body {
+                        std::fs::write(&p, new)?;
+                        changed += 1;
+                    }
+                }
+                Some("json") => {
+                    let mut v: Value = serde_json::from_slice(&std::fs::read(&p)?)?;
+                    let mut hit = false;
+                    for item in v["items"].as_array_mut().into_iter().flatten() {
+                        if let Some(n) = item["file"].as_str().and_then(|f| moved.get(Path::new(f))) {
+                            item["file"] = json!(n);
+                            hit = true;
+                        }
+                    }
+                    if hit {
+                        std::fs::write(&p, serde_json::to_vec_pretty(&v)?)?;
+                        changed += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    Ok(changed)
 }
 
 fn new_track<'a>(recording_mbid: &'a str, r: &'a Recording) -> NewTrack<'a> {
