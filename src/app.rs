@@ -230,6 +230,8 @@ impl App {
     }
 
     async fn remote(&self, action: RemoteCmd, tx: &Sender<Event>) -> Result<()> {
+        // Backups are written under the playlist folder; bring an old layout over first.
+        self.migrate_playlist_dir(tx).await?;
         match action {
             RemoteCmd::Ls { to } => {
                 for target in self.targets(to.as_deref())? {
@@ -342,6 +344,10 @@ impl App {
     /// (or delete) the rest. Backups under `<playlist_dir>/backup` follow the files that moved.
     async fn import(&self, dir: &Path, apply: bool, delete_duplicates: bool, tx: &Sender<Event>) -> Result<()> {
         let cfg = &self.config;
+        if apply {
+            // The backups this run may rewrite live under the playlist folder.
+            self.migrate_playlist_dir(tx).await?;
+        }
         let found = library::scan(dir)?;
         info(tx, format!("{} audio files under {}", found.len(), dir.display())).await?;
         let (mut unresolved, mut lookup_failed) = (0, 0);
