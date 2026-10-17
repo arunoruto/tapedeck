@@ -87,8 +87,6 @@ pub enum Command {
         #[command(subcommand)]
         action: RemoteCmd,
     },
-    /// Bring an existing folder of music (e.g. Explo's downloads) into the library.
-    /// Dry run unless --apply; files are moved, not copied.
     /// Bring a folder of audio files into the library. Dry run by default; --apply copies the files
     /// in and leaves the source alone; --move moves them instead.
     Import {
