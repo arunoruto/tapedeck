@@ -176,7 +176,7 @@ Everything else has a default. The full reference is in
 | `td rm ID` | Delete one track's file and forget it |
 | `td source ID URL` | Pin the download URL for one track and queue it |
 | `td refile [--dry-run]` | Re-check every track against MusicBrainz, retag, move files whose path changed |
-| `td import DIR [--apply] [--copy] [--delete-duplicates]` | Bring an existing folder (say, Explo's downloads) into the library; dry run by default, `--copy` leaves the source untouched |
+| `td import DIR [--apply] [--move] [--delete-duplicates]` | Bring an existing folder (say, Explo's downloads) into the library; dry run by default, `--apply` copies and leaves the source alone, `--move` moves |
 | `td remote ls` / `td remote rm GLOB [--yes]` | List or bulk-delete playlists on a sync target; `rm` backs up first |
 | `td remote backup [GLOB]` / `td remote restore FILE` | Save target playlists as m3u8 + JSON, or recreate one from such a file |
 | `td daemon` | Run as a service: listen on the socket, sync every `sync.interval` |

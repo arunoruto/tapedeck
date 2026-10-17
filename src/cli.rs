@@ -89,16 +89,23 @@ pub enum Command {
     },
     /// Bring an existing folder of music (e.g. Explo's downloads) into the library.
     /// Dry run unless --apply; files are moved, not copied.
+    /// Bring a folder of audio files into the library. Dry run by default; --apply copies the files
+    /// in and leaves the source alone; --move moves them instead.
     Import {
         dir: PathBuf,
+        /// Copy the files into the library (default is a dry run that changes nothing).
         #[arg(long)]
         apply: bool,
-        /// Copy files into the library instead of moving them; the source is never touched.
-        #[arg(long)]
+        /// Move instead of copy: files leave the source folder. Needs write access there.
+        #[arg(long, requires = "apply")]
+        #[serde(default)]
+        r#move: bool,
+        /// Accepted for compatibility; copying is the default.
+        #[arg(long, hide = true, conflicts_with = "move")]
         #[serde(default)]
         copy: bool,
-        /// Delete files whose recording is already in the library (with --apply; not with --copy).
-        #[arg(long, conflicts_with = "copy")]
+        /// With --move: delete source files whose recording is already in the library.
+        #[arg(long, requires = "move")]
         delete_duplicates: bool,
     },
 }

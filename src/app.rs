@@ -177,8 +177,8 @@ impl App {
             }
             Command::Refile { dry_run } => self.refile(dry_run, tx).await,
             Command::Remote { action } => self.remote(action, tx).await,
-            Command::Import { dir, apply, copy, delete_duplicates } => {
-                self.import(&dir, apply, copy, delete_duplicates, tx).await
+            Command::Import { dir, apply, r#move, copy: _, delete_duplicates } => {
+                self.import(&dir, apply, !r#move, delete_duplicates, tx).await
             }
         }
     }
@@ -374,7 +374,7 @@ impl App {
             let unwritable = found.iter().filter(|f| !library::writable(&f.path)).count();
             ensure!(
                 unwritable == 0,
-                "source not writable: {unwritable} of {} files (owned by another user?); use --copy",
+                "source not writable: {unwritable} of {} files (owned by another user?); drop --move to copy instead",
                 found.len()
             );
         }
@@ -541,8 +541,8 @@ impl App {
         }
         let mode = match (apply, copy) {
             (true, _) => "",
-            (false, true) => " (dry run; pass --apply to copy files)",
-            (false, false) => " (dry run; pass --apply to move files)",
+            (false, true) => " (dry run; pass --apply to copy files in)",
+            (false, false) => " (dry run; pass --apply --move to move files in)",
         };
         info(
             tx,

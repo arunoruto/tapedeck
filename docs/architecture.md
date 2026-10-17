@@ -109,11 +109,11 @@ file finds its recording. Files are then grouped by recording, because Explo dro
 song into every weekly folder it appears in. A recording the library already has makes
 every copy a duplicate; otherwise the copy closest to the recording's length is filed exactly
 like a download would be and the rest are duplicates. Duplicates are reported, or deleted with
-`--apply --delete-duplicates`. The default is a dry run, which reports the same groups
-`--apply` would act on; `--apply` moves files, or copies them with `--copy` when the source
-belongs to another user or should stay as it is (then nothing there is ever modified or
-deleted, and `--delete-duplicates` is refused). Without `--copy` the source must be writable,
-which is checked before the long resolving pass. A file is tagged only once it sits in the
+`--apply --move --delete-duplicates`. The default is a dry run, which reports the same groups
+`--apply` would act on. `--apply` copies the files in and never modifies or deletes anything
+in the source: the least surprising default for a folder another tool still owns. `--move`
+moves them instead (then `--delete-duplicates` is allowed), and needs write access to the
+source, which is checked before the long resolving pass. A file is tagged only once it sits in the
 library, so a failed move or copy leaves the source and the database as they were, is counted
 as failed, and the run goes on. Search results are cached per file (path, size, mtime), so the
 dry run pays for MusicBrainz once and `--apply` reuses them. Afterwards `--apply` rewrites any
