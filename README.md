@@ -2,7 +2,7 @@
 
 <div align="center">
   <a href="https://github.com/arunoruto/tapedeck">
-    <img src="assets/logo.svg" alt="tapedeck" width="360">
+    <img src="assets/logo.svg" alt="tapedeck" width="200">
   </a>
 
   <h3 align="center">tapedeck</h3>
@@ -69,8 +69,10 @@ binary is called `td`.
   Consistent artist, album, year and track number, and a hard guarantee against duplicates.
 - **Tags written by tapedeck**, not by whatever the download site had. Album artist and
   track artist are kept apart, so featured guests don't split an album across folders.
-- **An m3u8 for every fetched playlist**, dated like ListenBrainz names them. Your
-  recommendation history, readable by any player, no tapedeck required.
+- **An m3u8 for every fetched playlist**, one per week. Your recommendation history,
+  readable by any player, no tapedeck required.
+- **Downloads matched by length** against the MusicBrainz recording, so you get the album
+  audio rather than the music video with the two-minute intro.
 - **Plex sync** that scans the library, matches files and recreates the playlist.
 - **Daemon or one-shot, same CLI.** `td daemon` runs on an interval and listens on a Unix
   socket; every other `td` command talks to it if it's running and does the work itself if
@@ -166,6 +168,7 @@ Everything else has a default. The full reference is in
 | `td playlists` | Fetched playlists and where they've been synced |
 | `td push PLAYLIST [--to TARGET]` | Re-push one playlist |
 | `td retry` | Reset failed downloads so the next sync tries again |
+| `td source ID URL` | Pin the download URL for one track and queue it |
 | `td daemon` | Run as a service: listen on the socket, sync every `sync.interval` |
 
 Add `--json` to any of them for newline-delimited JSON instead of text.
@@ -181,8 +184,8 @@ After a sync the library looks like this:
 │   └── Fragments (2022)/
 │       └── 06 - Polyghost.opus
 └── Playlists/
-    ├── Weekly Jams for you, week of 2026-10-13 Mon.m3u8
-    └── Weekly Exploration for you, week of 2026-10-13 Mon.m3u8
+    ├── Weekly Jams 2026-10-13.m3u8
+    └── Weekly Exploration 2026-10-13.m3u8
 ```
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
