@@ -56,9 +56,10 @@ enum Entry {
 enum Mode {
     Normal,
     Search,
-    /// Asking for a download URL for one track.
+    /// Asking for one line of text about one track: a download URL, or a recording MBID.
     Prompt {
         track: i64,
+        ask: Ask,
         input: String,
     },
     /// Everything known about the selected track, as key/value rows.
@@ -68,6 +69,12 @@ enum Mode {
         msg: String,
         then: Pending,
     },
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Ask {
+    SourceUrl,
+    Recording,
 }
 
 enum Pending {
@@ -350,13 +357,21 @@ impl Tui {
                     }
                     self.reset_selection();
                 }
-                Mode::Prompt { track, mut input } => match key.code {
+                Mode::Prompt { track, ask, mut input } => match key.code {
                     KeyCode::Esc => self.status = "cancelled".into(),
                     KeyCode::Enter if !input.trim().is_empty() => {
-                        let url = input.trim().to_string();
-                        self.mode = Mode::Confirm {
-                            msg: format!("Download track #{track} from {url} and replace its file?"),
-                            then: Pending::Run(vec![Command::Source { track, url }, sync_now(true)]),
+                        let text = input.trim().to_string();
+                        self.mode = match ask {
+                            Ask::SourceUrl => Mode::Confirm {
+                                msg: format!("Download track #{track} from {text} and replace its file?"),
+                                then: Pending::Run(vec![Command::Source { track, url: text }, sync_now(true)]),
+                            },
+                            Ask::Recording => Mode::Confirm {
+                                msg: format!(
+                                    "Make track #{track} recording {text}? It is retagged and moved if its path changes."
+                                ),
+                                then: Pending::Run(vec![Command::Retag { track, recording: text }]),
+                            },
                         };
                     }
                     KeyCode::Enter => {}
@@ -369,7 +384,7 @@ impl Tui {
                             KeyCode::Char(c) => input.push(c),
                             _ => {}
                         }
-                        self.mode = Mode::Prompt { track, input };
+                        self.mode = Mode::Prompt { track, ask, input };
                     }
                 },
                 Mode::Confirm { then, .. } => match (key.code, then) {
@@ -450,7 +465,12 @@ impl Tui {
             }
             KeyCode::Char('s') => {
                 if let Some((track, _)) = self.track_ref() {
-                    self.mode = Mode::Prompt { track, input: String::new() };
+                    self.mode = Mode::Prompt { track, ask: Ask::SourceUrl, input: String::new() };
+                }
+            }
+            KeyCode::Char('m') => {
+                if let Some((track, _)) = self.track_ref() {
+                    self.mode = Mode::Prompt { track, ask: Ask::Recording, input: String::new() };
                 }
             }
             KeyCode::Char('p') => match self.selected_entry() {
@@ -586,8 +606,14 @@ impl Tui {
                 key("^U"),
                 dim(" wipe "),
             ]),
-            Mode::Prompt { input, .. } => Line::from(vec![
-                Span::styled(" download URL: ", Style::new().fg(th.accent).bold()),
+            Mode::Prompt { input, ask, .. } => Line::from(vec![
+                Span::styled(
+                    match ask {
+                        Ask::SourceUrl => " download URL: ",
+                        Ask::Recording => " MusicBrainz recording id: ",
+                    },
+                    Style::new().fg(th.accent).bold(),
+                ),
                 input.clone().into(),
                 Span::styled("▏", Style::new().fg(th.muted)),
             ]),
@@ -608,6 +634,7 @@ impl Tui {
                     ("S", "sync"),
                     ("R", "re-download"),
                     ("s", "source"),
+                    ("m", "match"),
                     ("p", "push"),
                     ("u", "unpush"),
                     ("d", "delete"),

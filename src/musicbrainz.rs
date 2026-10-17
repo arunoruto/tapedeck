@@ -97,6 +97,20 @@ const VERSION_WORDS: &[&str] = &[
     "rmx",
     "mix",
     "edit",
+    "intro",
+    "outro",
+    "clap",
+    "dirty",
+    "clean",
+    "extended",
+    "radio",
+    "club",
+    "dub",
+    "bootleg",
+    "rework",
+    "reprise",
+    "slowed",
+    "sped",
     "live",
     "version",
     "instrumental",
@@ -106,6 +120,22 @@ const VERSION_WORDS: &[&str] = &[
     "mashup",
     "cover",
 ];
+
+/// Not a thing anyone bought: DJ-pool dumps and MusicBrainz's placeholders.
+fn real_release(rel: &Value) -> bool {
+    let title = rel["title"].as_str().unwrap_or("").to_lowercase();
+    rel["status"].as_str() != Some("Pseudo-Release") && title != "unclustered files" && !title.starts_with("[non-album")
+}
+
+/// Lowercase, feat. stripped, punctuation collapsed: "Old Town Road" == "old town road".
+fn norm(title: &str) -> String {
+    strip_feat(title)
+        .to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
 
 fn version_words(title: &str) -> Vec<&str> {
     let lower = title.to_lowercase();
@@ -128,21 +158,26 @@ fn pick_search_hit(v: &Value, artist: &str, title: &str, length_ms: Option<i64>)
             !OFF_KINDS.iter().any(|k| dis.contains(k))
         })
         .collect();
-    // A recording that is on a plain studio album first (not only compilations, remaster reissues
-    // or live sets), then closest length in 3 s steps, then the one on the most releases. A popular
-    // song has dozens of one-release compilation copies within a few seconds of the album take.
+    // Order: a title that is exactly the query (no extra "(intro edit)" tail); real releases at
+    // all (DJ-pool pseudo-releases and "Unclustered Files" are not); on an official plain album,
+    // single or EP (not only compilations, DJ mixes or live sets); then closest length in 3 s
+    // steps; then the one on the most releases. A popular song has dozens of one-release
+    // compilation copies within a few seconds of the album take.
+    let want_title = norm(title);
     let best = hits.iter().min_by_key(|r| {
         let drift = match (length_ms, r["length"].as_i64()) {
             (Some(want), Some(l)) => (l - want).abs() / 3000,
             _ => i64::MAX / 2,
         };
-        let releases = r["releases"].as_array().cloned().unwrap_or_default();
-        let on_album = releases.iter().any(|rel| {
+        let releases: Vec<&Value> =
+            r["releases"].as_array().map(|v| v.iter().filter(|rel| real_release(rel)).collect()).unwrap_or_default();
+        let on_official = releases.iter().any(|rel| {
             rel["status"].as_str() == Some("Official")
-                && rel["release-group"]["primary-type"].as_str() == Some("Album")
+                && matches!(rel["release-group"]["primary-type"].as_str(), Some("Album" | "Single" | "EP"))
                 && rel["release-group"]["secondary-types"].as_array().is_none_or(|t| t.is_empty())
         });
-        (!on_album, drift, -(releases.len() as i64))
+        let exact = norm(r["title"].as_str().unwrap_or("")) == want_title;
+        (!exact, releases.is_empty(), !on_official, drift, -(releases.len() as i64))
     })?;
     best["id"].as_str().map(str::to_owned)
 }
@@ -334,6 +369,17 @@ mod tests {
         ]});
         assert_eq!(pick_search_hit(&rmx, "Queen", "Counting Stars", Some(257000)).as_deref(), Some("orig"));
         assert_eq!(pick_search_hit(&rmx, "Queen", "Counting Stars (Voicedude rmx)", None).as_deref(), Some("rmx"));
+        // A DJ-pool intro edit on a pseudo-release loses to the plain song on a single, even when
+        // the edit's title carries words the filter doesn't know.
+        let pool = json!({"recordings": [
+            {"id": "pool", "title": "Old Town Road (Fiinest Clap intro) (dirty)", "artist-credit": q, "score": 100, "length": 113000,
+             "releases": [{"title": "Unclustered Files", "status": "Pseudo-Release", "release-group": {"primary-type": "Album"}}]},
+            {"id": "single", "title": "Old Town Road", "artist-credit": q, "score": 100, "length": 113000,
+             "releases": [{"title": "Old Town Road", "status": "Official", "release-group": {"primary-type": "Single"}}]},
+            {"id": "weird", "title": "Old Town Road (Zyzz edition)", "artist-credit": q, "score": 100, "length": 113000,
+             "releases": [{"title": "X", "status": "Official", "release-group": {"primary-type": "Single"}}]}
+        ]});
+        assert_eq!(pick_search_hit(&pool, "Queen", "Old Town Road", Some(113000)).as_deref(), Some("single"));
         assert_eq!(strip_feat("APT. (feat. Bruno Mars)"), "APT.");
         assert_eq!(strip_feat("Blame feat. John Newman"), "Blame");
         assert_eq!(strip_feat("Live and Let Die"), "Live and Let Die");

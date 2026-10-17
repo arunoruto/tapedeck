@@ -76,6 +76,14 @@ pub enum Command {
     Rm { track: i64 },
     /// Pin the download URL for a track (see `td search`) and queue it for the next sync.
     Source { track: i64, url: String },
+    /// Make a track be another MusicBrainz recording: refetch its metadata, retag the file and
+    /// move it if its templated path changed. For when the automatic match was wrong.
+    Retag {
+        track: i64,
+        /// The recording MBID (from musicbrainz.org/recording/…).
+        #[arg(long)]
+        recording: String,
+    },
     /// Re-query MusicBrainz for every track, retag, and move files whose templated path changed.
     Refile {
         /// Report what would move without touching anything.

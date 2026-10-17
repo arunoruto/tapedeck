@@ -169,6 +169,12 @@ impl Db {
         Ok(())
     }
 
+    /// Change which recording a row is. Fails if another row already is that recording.
+    pub fn set_recording(&self, id: i64, mbid: &str) -> Result<()> {
+        self.0.execute("UPDATE tracks SET recording_mbid = ?2 WHERE id = ?1", params![id, mbid])?;
+        Ok(())
+    }
+
     /// Pin a download URL and queue the track again. Returns false if the id does not exist.
     pub fn set_source_url(&self, id: i64, url: &str) -> Result<bool> {
         let n = self.0.execute(

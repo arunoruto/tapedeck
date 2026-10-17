@@ -175,13 +175,14 @@ Everything else has a default. The full reference is in
 | `td retry [ID]` | Reset failed downloads so the next sync tries again; with an id, re-download that one track |
 | `td rm ID` | Delete one track's file and forget it |
 | `td source ID URL` | Pin the download URL for one track and queue it |
+| `td retag ID --recording MBID` | Correct a wrong match: make the track that recording, retag, move if the path changes |
 | `td refile [--dry-run]` | Re-check every track against MusicBrainz, retag, move files whose path changed |
 | `td import DIR [--apply] [--move] [--delete-duplicates]` | Bring an existing folder (say, Explo's downloads) into the library; dry run by default, `--apply` copies and leaves the source alone, `--move` moves |
 | `td remote ls` / `td remote rm GLOB [--yes]` | List or bulk-delete playlists on a sync target; `rm` backs up first |
 | `td remote backup [GLOB]` / `td remote restore FILE` | Save target playlists as m3u8 + JSON, or recreate one from such a file |
 | `td remote relink --from DIR` | Point backup entries under DIR at the library's copy of the same recording; run before deleting an imported folder |
 | `td daemon` | Run as a service: listen on the socket, sync every `sync.interval` |
-| `td` / `td tui` | Browse the library (artist › album › song) and playlists; `i` shows a track's tags, file quality and MusicBrainz/ListenBrainz/source URLs; sync, re-download, pin a source, push, delete, each behind a `[y/N]`. Catppuccin out of the box, your own colours via a TOML theme |
+| `td` / `td tui` | Browse the library (artist › album › song) and playlists; `i` shows a track's tags, file quality and MusicBrainz/ListenBrainz/source URLs; sync, re-download, pin a source, fix a match, push, delete, each behind a `[y/N]`. Catppuccin out of the box, your own colours via a TOML theme |
 
 Output is a table or plain lines; add `--json` to any command for newline-delimited JSON
 events instead, which is what scripts and agents should parse.

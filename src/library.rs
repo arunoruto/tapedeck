@@ -329,7 +329,7 @@ fn find_uuid(s: &str) -> Option<String> {
     (0..s.len().saturating_sub(35)).filter_map(|i| s.get(i..i + 36)).find(|w| is_uuid(w)).map(str::to_string)
 }
 
-fn is_uuid(s: &str) -> bool {
+pub fn is_uuid(s: &str) -> bool {
     s.len() == 36
         && s.chars()
             .enumerate()

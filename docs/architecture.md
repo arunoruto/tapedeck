@@ -104,6 +104,11 @@ afterwards because their paths may have changed. `--dry-run` prints the moves an
 nothing. One lookup per track at one request per second, so a thousand tracks take a quarter
 of an hour.
 
+`td retag ID --recording MBID` is the manual override for a wrong match: the row becomes that
+recording, metadata is refetched, the file retagged and moved if its templated path changed, and
+its playlists' m3u8s rewritten. In the TUI it is `m` on a track. `td refile` cannot do this, it
+re-resolves the recording id the row already has.
+
 `td import DIR` is for a folder that predates tapedeck. Each audio file is identified by its
 `MUSICBRAINZ_TRACKID` tag when present, otherwise by a MusicBrainz search on artist and
 title (from tags, else from an `Artist - Title` file name) scored by how close the file's
@@ -180,7 +185,7 @@ TUI; those links are how a track is checked for now.
 
 Actions are the CLI's own `Command`s, nothing more: `S` is `td sync`, `R` is `td retry ID`
 followed by `td sync --no-fetch`, `s` asks for a URL and runs `td source` plus the same sync,
-`p` is `td push` and `u` is `td unpush`, `d` is `td rm ID` for a track or `td remote rm TITLE --yes` for a remote
+`m` asks for a recording id and runs `td retag`, `p` is `td push` and `u` is `td unpush`, `d` is `td rm ID` for a track or `td remote rm TITLE --yes` for a remote
 playlist (backup first, as always). They go through `daemon::dispatch`, so with the service
 running the daemon does the work under its lock and the TUI only streams the events; without
 it the command runs in-process. One action at a time. Everything that deletes or re-downloads

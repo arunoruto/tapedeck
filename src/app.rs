@@ -183,6 +183,36 @@ impl App {
                 ensure!(self.db().set_source_url(track, &url)?, "no track with id {track}");
                 info(tx, format!("track {track} queued for download from {url}")).await
             }
+            Command::Retag { track, recording } => {
+                let cfg = &self.config;
+                let t = self.db().track_by_id(track)?.with_context(|| format!("no track with id {track}"))?;
+                let mbid = recording.trim().to_lowercase();
+                ensure!(library::is_uuid(&mbid), "{recording:?} is not a MusicBrainz id");
+                if let Some(other) = self.db().track_by_mbid(&mbid)?
+                    && other.id != track
+                {
+                    bail!("track {} ({} - {}) already is that recording", other.id, other.artist, other.title);
+                }
+                let r = self.mb.recording(&mbid).await?;
+                self.db().set_recording(track, &mbid)?;
+                self.db().insert_track(&new_track(&mbid, &r))?;
+                let fresh = self.db().track_by_id(track)?.context("track vanished")?;
+                if let Some(old_rel) = &t.path {
+                    let ext = Path::new(old_rel).extension().and_then(|e| e.to_str()).unwrap_or("bin");
+                    let new_rel = library::render_template(&cfg.path_template, &fresh, ext)?;
+                    if new_rel != Path::new(old_rel) {
+                        let new_rel = library::unique(&cfg.library, &new_rel);
+                        library::move_track(&cfg.library, Path::new(old_rel), &new_rel)?;
+                        self.db().set_path(track, &new_rel.to_string_lossy())?;
+                        info(tx, format!("moved {old_rel} → {}", new_rel.display())).await?;
+                    }
+                    let fresh = self.db().track_by_id(track)?.context("track vanished")?;
+                    library::tag(&cfg.library.join(fresh.path.as_deref().unwrap_or(old_rel)), &fresh)?;
+                }
+                let playlists = self.db().playlists_with_track(track)?;
+                self.rewrite_m3us(Some(&playlists))?;
+                info(tx, format!("track {track} is now {} - {} [{}]", r.artist, r.title, r.album)).await
+            }
             Command::Refile { dry_run } => self.refile(dry_run, tx).await,
             Command::Remote { action } => self.remote(action, tx).await,
             Command::Import { dir, apply, r#move, copy: _, delete_duplicates } => {
@@ -301,10 +331,23 @@ impl App {
                 }
             }
             RemoteCmd::Relink { dir, from } => {
-                let dir = dir.unwrap_or_else(|| self.config.playlist_dir().join("backup"));
-                let (map, unresolved) = self.relink_map(&dir, &from, tx).await?;
-                let n = rewrite_backups(&dir, &map)?;
-                info(tx, format!("{} paths relinked to the library in {n} backup files; {unresolved} outside paths have no library copy", map.len())).await?;
+                // Without --dir, only the folders tapedeck writes itself (backup/<target>), not a
+                // user's own copies next to them.
+                let dirs: Vec<PathBuf> = match dir {
+                    Some(d) => vec![d],
+                    None => {
+                        let base = self.config.playlist_dir().join("backup");
+                        self.targets.iter().map(|t| base.join(t.name())).collect()
+                    }
+                };
+                let (mut relinked, mut files, mut unresolved) = (0, 0, 0);
+                for dir in &dirs {
+                    let (map, left) = self.relink_map(dir, &from, tx).await?;
+                    files += rewrite_backups(dir, &map)?;
+                    relinked += map.len();
+                    unresolved += left;
+                }
+                info(tx, format!("{relinked} paths relinked to the library in {files} backup files; {unresolved} outside paths have no library copy")).await?;
             }
             RemoteCmd::Restore { file, to } => {
                 let saved: Value = serde_json::from_slice(&std::fs::read(&file)?).context("reading backup")?;
@@ -660,14 +703,15 @@ impl App {
             };
             let hit = mbid.as_deref().and_then(|m| by_mbid.get(m).copied()).or_else(|| {
                 // Credits differ in form ("Clean Bandit" vs "Clean Bandit feat. Demi Lovato"),
-                // so one artist string starting with the other is a match.
+                // so one artist string starting with the other is a match. Length: the
+                // recording's, else the library file's own (a video cut is longer than what
+                // MusicBrainz lists, yet the same copy import matched by name).
                 let (artist, title) = name_key(&found);
                 let len = found.duration_ms?;
                 by_name
                     .iter()
-                    .find(|(a, t, ms, _)| {
-                        (a.starts_with(&artist) || artist.starts_with(a)) && *t == title && (ms - len).abs() <= 5_000
-                    })
+                    .filter(|(a, t, _, _)| (a.starts_with(&artist) || artist.starts_with(a)) && *t == title)
+                    .find(|(_, _, ms, p)| (ms - len).abs() <= 5_000 || library::same_audio(&library.join(p), &path))
                     .map(|(_, _, _, p)| *p)
             });
             match hit {
