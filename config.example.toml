@@ -1,0 +1,32 @@
+# Copy to ~/.config/tapedeck/config.toml. Full reference: docs/configuration.md
+
+library = "/srv/music"
+
+# Lidarr-style template, relative to `library`.
+# Tokens: {artist} {album_artist} {album} {year} {track} {track:02} {title} {ext}
+path_template = "{album_artist}/{album} ({year})/{track:02} - {title}.{ext}"
+
+# playlist_dir = "/srv/music/Playlists"            # m3u8 files; default <library>/Playlists
+# database     = "~/.local/share/tapedeck/tapedeck.db"
+# socket       = "$XDG_RUNTIME_DIR/tapedeck.sock"
+
+[listenbrainz]
+user = "your-listenbrainz-name"
+# token = "..."                                     # only for private playlists
+playlists = ["weekly-jams", "weekly-exploration"]  # also: daily-jams
+
+[download]
+backend = "ytdlp"
+format = "opus"           # anything yt-dlp --audio-format accepts
+# ytdlp_bin = "yt-dlp"
+
+[sync]
+interval = "6h"           # daemon sync cadence: 30m, 6h, 1d
+targets = ["plex"]
+
+[sync.plex]
+url = "http://plex.local:32400"
+token = "your-plex-token"
+section = "Music"
+# How Plex sees the library if it runs in a container or on another host:
+# path_map = { "/srv/music" = "/music" }

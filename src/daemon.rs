@@ -1,0 +1,90 @@
+//! Unix-socket server. Protocol: client writes one `Command` as a JSON line, the daemon
+//! streams `Event` JSON lines back and closes. `td daemon` runs this; any other `td`
+//! invocation connects if the socket is live and otherwise runs the command in-process.
+
+use std::sync::Arc;
+
+use anyhow::{Context, Result};
+use tokio::{
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
+    net::{UnixListener, UnixStream},
+    sync::mpsc,
+};
+
+use crate::{App, Event, cli::Command, config::Config};
+
+pub async fn connect(cfg: &Config) -> Option<UnixStream> {
+    UnixStream::connect(cfg.socket_path()).await.ok()
+}
+
+/// Client side: send the command, relay events into `tx`.
+pub async fn forward(stream: UnixStream, cmd: Command, tx: mpsc::Sender<Event>) -> Result<()> {
+    let (rd, mut wr) = stream.into_split();
+    wr.write_all(format!("{}\n", serde_json::to_string(&cmd)?).as_bytes()).await?;
+    wr.shutdown().await?;
+    let mut lines = BufReader::new(rd).lines();
+    while let Some(line) = lines.next_line().await? {
+        let ev: Event = serde_json::from_str(&line).context("bad event from daemon")?;
+        if tx.send(ev).await.is_err() {
+            break;
+        }
+    }
+    Ok(())
+}
+
+pub async fn serve(cfg: Config) -> Result<()> {
+    let sock = cfg.socket_path();
+    let interval = cfg.sync_interval()?;
+    let app = Arc::new(App::open(cfg)?);
+
+    if connect(&app.config).await.is_some() {
+        anyhow::bail!("another daemon is already listening on {}", sock.display());
+    }
+    let _ = std::fs::remove_file(&sock); // stale from a previous run
+    if let Some(dir) = sock.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let listener = UnixListener::bind(&sock).with_context(|| format!("binding {}", sock.display()))?;
+    tracing::info!("listening on {}", sock.display());
+
+    // Periodic sync. Events go to the log.
+    let ticker = app.clone();
+    tokio::spawn(async move {
+        loop {
+            let (tx, mut rx) = mpsc::channel(64);
+            let a = ticker.clone();
+            tokio::spawn(async move { a.run(Command::Sync { playlist: None, no_push: false }, tx).await });
+            while let Some(ev) = rx.recv().await {
+                match ev {
+                    Event::Error { msg } => tracing::error!("{msg}"),
+                    Event::Info { msg } => tracing::info!("{msg}"),
+                    Event::Data { .. } => {}
+                }
+            }
+            tokio::time::sleep(interval).await;
+        }
+    });
+
+    loop {
+        let (stream, _) = listener.accept().await?;
+        let app = app.clone();
+        tokio::spawn(async move {
+            if let Err(e) = handle(app, stream).await {
+                tracing::warn!("client: {e:#}");
+            }
+        });
+    }
+}
+
+async fn handle(app: Arc<App>, stream: UnixStream) -> Result<()> {
+    let (rd, mut wr) = stream.into_split();
+    let mut line = String::new();
+    BufReader::new(rd).read_line(&mut line).await?;
+    let cmd: Command = serde_json::from_str(&line).context("bad command")?;
+    let (tx, mut rx) = mpsc::channel(64);
+    tokio::spawn(async move { app.run(cmd, tx).await });
+    while let Some(ev) = rx.recv().await {
+        wr.write_all(format!("{}\n", serde_json::to_string(&ev)?).as_bytes()).await?;
+    }
+    Ok(())
+}

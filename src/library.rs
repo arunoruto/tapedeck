@@ -1,0 +1,133 @@
+//! Filing downloaded audio into the library: path templating, tagging, moving.
+
+use std::path::{Path, PathBuf};
+
+use anyhow::{Context, Result, bail};
+use lofty::config::WriteOptions;
+use lofty::prelude::*;
+use lofty::probe::Probe;
+use lofty::tag::{ItemKey, Tag};
+
+use crate::db::Track;
+
+const TOKENS: &[&str] = &["artist", "album_artist", "album", "year", "track", "track:02", "title", "ext"];
+
+/// Render a Lidarr-style template like `{album_artist}/{album} ({year})/{track:02} - {title}.{ext}`.
+/// Each token value is sanitized so it can never introduce a path separator.
+pub fn render_template(template: &str, t: &Track, ext: &str) -> Result<PathBuf> {
+    let mut out = String::new();
+    let mut rest = template;
+    while let Some(start) = rest.find('{') {
+        out.push_str(&rest[..start]);
+        let end = rest[start..].find('}').map(|e| start + e).context("unclosed { in path_template")?;
+        let token = &rest[start + 1..end];
+        let value = match token {
+            "artist" => t.artist.clone(),
+            "album_artist" => t.album_artist.clone(),
+            "album" => t.album.clone(),
+            "year" => t.year.map(|y| y.to_string()).unwrap_or_else(|| "Unknown".into()),
+            "track" => t.track_no.unwrap_or(0).to_string(),
+            "track:02" => format!("{:02}", t.track_no.unwrap_or(0)),
+            "title" => t.title.clone(),
+            "ext" => ext.to_string(),
+            other => bail!("unknown token {{{other}}} in path_template, known: {}", TOKENS.join(" ")),
+        };
+        out.push_str(&sanitize(&value));
+        rest = &rest[end + 1..];
+    }
+    out.push_str(rest);
+    Ok(PathBuf::from(out))
+}
+
+/// Fail fast on a bad template at startup instead of on the first download.
+pub fn validate_template(template: &str) -> Result<()> {
+    let dummy = Track {
+        id: 0,
+        recording_mbid: String::new(),
+        title: "t".into(),
+        artist: "a".into(),
+        album_artist: "a".into(),
+        album: "b".into(),
+        year: Some(2000),
+        track_no: Some(1),
+        path: None,
+        status: String::new(),
+        source_url: None,
+        error: None,
+    };
+    render_template(template, &dummy, "opus").map(drop)
+}
+
+fn sanitize(s: &str) -> String {
+    let cleaned: String = s
+        .chars()
+        .map(|c| match c {
+            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0' => '_',
+            c if c.is_control() => '_',
+            c => c,
+        })
+        .collect();
+    let trimmed = cleaned.trim().trim_end_matches('.').trim();
+    if trimmed.is_empty() { "_".into() } else { trimmed.to_string() }
+}
+
+/// Write tags from our MusicBrainz-sourced metadata, replacing whatever yt-dlp left behind.
+pub fn tag(path: &Path, t: &Track) -> Result<()> {
+    let mut file = Probe::open(path)?.read().with_context(|| format!("reading tags of {}", path.display()))?;
+    if file.primary_tag().is_none() {
+        let ty = file.primary_tag_type();
+        file.insert_tag(Tag::new(ty));
+    }
+    let tag = file.primary_tag_mut().expect("tag inserted above");
+    tag.clear();
+    tag.set_title(t.title.clone());
+    tag.set_artist(t.artist.clone());
+    tag.set_album(t.album.clone());
+    tag.insert_text(ItemKey::AlbumArtist, t.album_artist.clone());
+    tag.insert_text(ItemKey::MusicBrainzRecordingId, t.recording_mbid.clone());
+    if let Some(n) = t.track_no {
+        tag.set_track(n as u32);
+    }
+    if let Some(y) = t.year {
+        tag.insert_text(ItemKey::RecordingDate, y.to_string());
+    }
+    tag.save_to_path(path, WriteOptions::default()).with_context(|| format!("writing tags to {}", path.display()))
+}
+
+/// Tag a downloaded file and move it to its templated place. Returns the path relative to `library`.
+pub fn file_track(library: &Path, template: &str, t: &Track, downloaded: &Path) -> Result<PathBuf> {
+    tag(downloaded, t)?;
+    let ext = downloaded.extension().and_then(|e| e.to_str()).unwrap_or("bin");
+    let rel = render_template(template, t, ext)?;
+    let dest = library.join(&rel);
+    std::fs::create_dir_all(dest.parent().context("template has no directory part")?)?;
+    std::fs::rename(downloaded, &dest).with_context(|| format!("moving to {}", dest.display()))?;
+    Ok(rel)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn template_renders_and_sanitizes() {
+        let t = Track {
+            id: 1,
+            recording_mbid: "x".into(),
+            title: "AC/DC: Live?".into(),
+            artist: "AC/DC feat. X".into(),
+            album_artist: "AC/DC".into(),
+            album: "Back in Black".into(),
+            year: Some(1980),
+            track_no: Some(3),
+            path: None,
+            status: "wanted".into(),
+            source_url: None,
+            error: None,
+        };
+        let p = render_template("{album_artist}/{album} ({year})/{track:02} - {title}.{ext}", &t, "opus").unwrap();
+        assert_eq!(p, PathBuf::from("AC_DC/Back in Black (1980)/03 - AC_DC_ Live_.opus"));
+        assert!(render_template("{nope}", &t, "opus").is_err());
+        assert!(validate_template("{artist}/{title}.{ext}").is_ok());
+    }
+}

@@ -1,0 +1,18 @@
+# User unit: ~/.config/systemd/user/tapedeck.service
+#   systemctl --user enable --now tapedeck
+# Uses $XDG_CONFIG_HOME/tapedeck/config.toml and listens on $XDG_RUNTIME_DIR/tapedeck.sock,
+# so a plain `td sync` from the same user talks to this daemon.
+
+[Unit]
+Description=tapedeck music sync daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=%h/.cargo/bin/td daemon
+Restart=on-failure
+RestartSec=30
+Environment=RUST_LOG=info
+
+[Install]
+WantedBy=default.target

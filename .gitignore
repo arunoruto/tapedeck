@@ -1,0 +1,6 @@
+/target
+/result
+/config.toml
+*.db
+*.db-wal
+*.db-shm

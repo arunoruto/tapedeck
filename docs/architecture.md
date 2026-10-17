@@ -1,0 +1,125 @@
+# Architecture
+
+Single Rust crate, one binary (`td`) that is both the CLI and the daemon.
+
+```
+src/
+  main.rs          parse args; connect to the daemon or run in-process
+  cli.rs           Command enum: clap subcommands, also the socket wire format
+  daemon.rs        Unix socket server + periodic sync tick
+  app.rs           App: executes a Command, streams Events
+  config.rs        TOML config and derived paths
+  db.rs            rusqlite wrapper, schema in schema.sql
+  library.rs       path template, tagging (lofty), moving files into place
+  m3u.rs           m3u8 writer
+  listenbrainz.rs  created-for playlists (JSPF)
+  musicbrainz.rs   recording lookup
+  download/        Downloader trait, yt-dlp implementation
+  sync/            SyncTarget trait, Plex implementation
+```
+
+## Sync flow
+
+`td sync` does, in order:
+
+1. Fetch the user's created-for playlists from ListenBrainz and keep the kinds listed
+   in `listenbrainz.playlists`.
+2. For each playlist, walk its tracks. A recording MBID we already have is reused;
+   a new one is looked up on MusicBrainz and inserted as `wanted`. The playlist's
+   track list is replaced in `playlist_tracks`.
+3. Download every `wanted` track with the configured backend into
+   `<library>/.tapedeck-tmp`, write tags from the MusicBrainz data, render the path
+   template and rename the file into place. Success → `ready` with its relative path;
+   failure → `failed` with the error text. `td retry` flips `failed` back to `wanted`.
+4. Write an m3u8 for each playlist fetched in this run.
+5. Push each of those playlists to every enabled sync target and record the result in
+   `playlist_syncs`.
+
+Steps 2 and 3 are idempotent per MBID. Running sync twice downloads nothing new.
+
+## Daemon and client
+
+`td daemon` binds `socket` and runs the sync flow every `sync.interval`. Every other
+`td` command first tries to connect to that socket:
+
+- Connected: the `Command` is serialized as one JSON line, the daemon streams back
+  `Event` JSON lines and closes. The client renders them.
+- Not connected: the same `App::run` executes in the CLI process.
+
+`Command` is the protocol. There is no second schema to keep in sync with the CLI,
+and `--json` output is exactly what goes over the socket.
+
+Events are `info` (progress text), `data` (a command's structured result) and `error`.
+A non-zero exit means at least one `error` event was emitted.
+
+The daemon serializes commands with a single lock. A `td search` issued while a sync
+is downloading waits for the sync. That is deliberate for now: it keeps SQLite access
+trivially correct and the download queue is the slow part anyway.
+
+## Extension points
+
+Two traits, both small on purpose:
+
+```rust
+trait Downloader {
+    async fn download(&self, track: &Track, dest_dir: &Path) -> Result<PathBuf>;
+}
+
+trait SyncTarget {
+    async fn sync_playlist(&self, title: &str, files: &[PathBuf]) -> Result<String>;
+}
+```
+
+A downloader only has to produce a file. Tagging and filing happen afterwards in
+`library.rs`, so a Soulseek or Bandcamp backend does not have to know about templates.
+A sync target only sees a title and absolute paths. Jellyfin, Subsonic or an
+"export m3u to this folder" target are each one file in `sync/`.
+
+Backends are selected by name in `download.backend` and `sync.targets`; the match
+statements in `download/mod.rs` and `sync/mod.rs` are the registry.
+
+## Data model
+
+```
+artists         id, mbid, name
+albums          id, mbid, artist_id, title, year
+tracks          id, recording_mbid, album_id, title, artist, track_no, path, status, source_url, error
+playlists       id, lb_mbid, name, kind, m3u_path, fetched_at
+playlist_tracks playlist_id, track_id, position
+playlist_syncs  playlist_id, target, remote_id, synced_at
+```
+
+`tracks.recording_mbid` is unique. That single constraint is what stops the library
+filling up with duplicates when the same song shows up in several weekly playlists.
+`tracks.path` is relative to `library`, so the library can move.
+
+## Design notes
+
+Choices that are not obvious from the code, and why.
+
+**MusicBrainz is the source of truth for metadata, not yt-dlp.** ListenBrainz hands us
+recording MBIDs for free. Looking each one up once gives consistent artist, album, year
+and track number, which is what makes a path template and clean tags possible. The
+download is just the audio.
+
+**yt-dlp as a subprocess, not a library.** It changes weekly to keep up with sites;
+shelling out means `yt-dlp -U` fixes things without a rebuild.
+
+**One m3u8 per fetched playlist, always.** The dated ListenBrainz title is the file
+name, so the folder is a history of what was recommended when, usable by any player
+without tapedeck. Sync targets get a stable name (`Weekly Jams`) and are replaced each
+week, matching what Explo does.
+
+**SQLite only, no JSON store.** One source of truth. `--json` on any command gives a
+machine-readable dump when needed.
+
+**Track artist and album artist are stored separately.** `tracks.artist` is the
+recording's credit (`Bonobo feat. Nicole Miglis`); `artists` holds the release's credit
+(`Bonobo`) and is what albums hang off. Filing by `{album_artist}` keeps an album in one
+folder even when half its tracks have guests.
+
+**Plex playlists are recreated, not diffed.** Deleting and recreating is a handful of
+requests and has no edge cases. Playlist history lives in the m3u8 files, not in Plex.
+
+**The release picked for a recording** is the earliest official album, then EP, then
+single. This avoids filing a track under a later compilation or a deluxe reissue.

@@ -1,0 +1,35 @@
+{ lib, rustPlatform, makeWrapper, versionCheckHook, nix-update-script, yt-dlp, ffmpeg }:
+
+rustPlatform.buildRustPackage (finalAttrs: {
+  pname = "tapedeck";
+  version = (lib.importTOML ../Cargo.toml).package.version;
+
+  src = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [ ../Cargo.toml ../Cargo.lock ../src ../tests ../config.example.toml ];
+  };
+  cargoLock.lockFile = ../Cargo.lock;
+
+  nativeBuildInputs = [ makeWrapper ];
+
+  # Tests that need the network are #[ignore]d in the source and therefore skipped here.
+  # The remaining suite covers parsing, the database, templating and the CLI.
+
+  # yt-dlp needs ffmpeg for audio extraction; put both on td's PATH.
+  postInstall = ''
+    wrapProgram $out/bin/td --prefix PATH : ${lib.makeBinPath [ yt-dlp ffmpeg ]}
+  '';
+
+  nativeInstallCheckInputs = [ versionCheckHook ];
+  doInstallCheck = true;
+
+  passthru.updateScript = nix-update-script { };
+
+  meta = {
+    description = "ListenBrainz playlists → downloaded, tagged library → Plex";
+    homepage = "https://github.com/arunoruto/tapedeck";
+    changelog = "https://github.com/arunoruto/tapedeck/releases/tag/v${finalAttrs.version}";
+    license = lib.licenses.mit;
+    mainProgram = "td";
+  };
+})

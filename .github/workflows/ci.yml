@@ -1,0 +1,36 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  cargo:
+    name: fmt, clippy, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      # Network tests are #[ignore]d for offline builds; CI has network, so run them too.
+      - run: cargo test -- --include-ignored
+
+  nix:
+    name: nix build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+      - uses: cachix/cachix-action@v16
+        with:
+          name: arunoruto
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+          # Only main gets pushed to the cache; PRs just build.
+          skipPush: ${{ github.event_name == 'pull_request' }}
+      - run: nix build -L .#tapedeck
+      - run: nix flake check
