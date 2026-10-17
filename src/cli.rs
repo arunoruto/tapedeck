@@ -24,7 +24,7 @@ pub struct Cli {
 pub enum Command {
     /// Run as a service: listen on the socket and sync on an interval.
     Daemon,
-    /// Browse the library and playlists in the terminal (read-only). Also what plain `td` does.
+    /// Browse the library and playlists in the terminal, with actions. Also what plain `td` does.
     Tui,
     /// Fetch ListenBrainz playlists, download missing tracks, write m3u files, push to sync targets.
     Sync {
@@ -34,6 +34,11 @@ pub enum Command {
         /// Skip pushing to sync targets.
         #[arg(long)]
         no_push: bool,
+        /// Skip ListenBrainz: only download what is already wanted, then refresh and push the
+        /// playlists those tracks belong to.
+        #[arg(long)]
+        #[serde(default)]
+        no_fetch: bool,
     },
     /// Library counts by track status.
     Status,
@@ -49,8 +54,11 @@ pub enum Command {
         #[arg(long)]
         to: Option<String>,
     },
-    /// Reset failed tracks to wanted so the next sync retries them.
-    Retry,
+    /// Reset failed tracks to wanted so the next sync retries them; with an id, re-download that
+    /// one track (its current file is dropped).
+    Retry { track: Option<i64> },
+    /// Delete a track's file and forget it. A later sync re-adds it if a playlist still lists it.
+    Rm { track: i64 },
     /// Pin the download URL for a track (see `td search`) and queue it for the next sync.
     Source { track: i64, url: String },
     /// Re-query MusicBrainz for every track, retag, and move files whose templated path changed.

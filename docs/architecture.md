@@ -16,7 +16,7 @@ src/
   musicbrainz.rs   recording lookup
   download/        Downloader trait, yt-dlp implementation
   sync/            SyncTarget trait, Plex implementation
-  tui.rs           `td tui` / plain `td`: ratatui browser over the database (read-only)
+  tui.rs           `td tui` / plain `td`: ratatui browser; actions reuse the CLI commands
   render.rs        tables / key-value lines for human output
 ```
 
@@ -117,10 +117,18 @@ sync target's playlist list once at start. Two tabs. *Library* is a three-column
 artists › albums › songs, regrouped from the track table on every draw (cheap at this size;
 cache it if that ever shows). *Playlists* lists local playlists with their sync marks and remote
 playlists dimmed, with the tracks of the selected one on the right. `/` filters by artist, title
-or album in both tabs; the bar below shows the selected track's id, path, source URL and error.
-Keys follow vim and less: `hjkl`, `^D`/`^U` half page, `^F`/`^B` page, `g`/`G`, `Tab` or `1`/`2`
-for tabs. It changes nothing, by design, until the actions (retry, pin a source, push, delete)
-get confirmation prompts.
+or album in both tabs; the pane below shows the selected track's id, path, source URL and error,
+plus the last lines of whatever action is running. Keys follow vim and less: `hjkl`, `^D`/`^U`
+half page, `^F`/`^B` page, `g`/`G`, `Tab` or `1`/`2` for tabs.
+
+Actions are the CLI's own `Command`s, nothing more: `S` is `td sync`, `R` is `td retry ID`
+followed by `td sync --no-fetch`, `s` asks for a URL and runs `td source` plus the same sync,
+`p` is `td push`, `d` is `td rm ID` for a track or `td remote rm TITLE --yes` for a remote
+playlist (backup first, as always). They go through `daemon::dispatch`, so with the service
+running the daemon does the work under its lock and the TUI only streams the events; without
+it the command runs in-process. One action at a time. Everything that deletes or re-downloads
+asks `[y/N]` first, and the TUI reloads from the database when the action ends. Local playlists
+cannot be deleted from here: they mirror ListenBrainz and would come back on the next sync.
 
 ## Data model
 

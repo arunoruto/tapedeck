@@ -50,6 +50,14 @@ fn status_runs_in_process_and_emits_json() {
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("no playlist"));
 
+    for args in [["rm", "999"], ["retry", "999"]] {
+        let out = td(&config, &args);
+        assert!(!out.status.success());
+        assert!(String::from_utf8_lossy(&out.stderr).contains("no track with id 999"), "{args:?}");
+    }
+    let out = td(&config, &["retry"]);
+    assert!(out.status.success());
+
     let _ = fs::remove_dir_all(&dir);
 }
 

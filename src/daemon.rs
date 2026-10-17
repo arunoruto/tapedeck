@@ -32,6 +32,18 @@ pub async fn forward(stream: UnixStream, cmd: Command, tx: mpsc::Sender<Event>) 
     Ok(())
 }
 
+/// Run a command through the daemon when its socket is live, else in-process. Events go to `tx`;
+/// failures inside the command arrive as `Event::Error`, the `Err` here is only for plumbing.
+pub async fn dispatch(cfg: &Config, cmd: Command, tx: mpsc::Sender<Event>) -> Result<()> {
+    match connect(cfg).await {
+        Some(stream) => forward(stream, cmd, tx).await,
+        None => {
+            App::open(cfg.clone())?.run(cmd, tx).await;
+            Ok(())
+        }
+    }
+}
+
 pub async fn serve(cfg: Config) -> Result<()> {
     let sock = cfg.socket_path();
     let interval = cfg.sync_interval()?;
@@ -53,7 +65,9 @@ pub async fn serve(cfg: Config) -> Result<()> {
         loop {
             let (tx, mut rx) = mpsc::channel(64);
             let a = ticker.clone();
-            tokio::spawn(async move { a.run(Command::Sync { playlist: None, no_push: false }, tx).await });
+            tokio::spawn(
+                async move { a.run(Command::Sync { playlist: None, no_push: false, no_fetch: false }, tx).await },
+            );
             while let Some(ev) = rx.recv().await {
                 match ev {
                     Event::Error { msg } => tracing::error!("{msg}"),

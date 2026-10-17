@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
 use tapedeck::{
-    App, Event,
+    Event,
     cli::{Cli, Command},
     config::Config,
     daemon,
@@ -25,16 +25,7 @@ async fn main() -> Result<()> {
     };
 
     let (tx, mut rx) = mpsc::channel(64);
-    let worker = match daemon::connect(&config).await {
-        Some(stream) => tokio::spawn(daemon::forward(stream, cmd, tx)),
-        None => {
-            let app = App::open(config)?;
-            tokio::spawn(async move {
-                app.run(cmd, tx).await;
-                Ok(())
-            })
-        }
-    };
+    let worker = tokio::spawn(async move { daemon::dispatch(&config, cmd, tx).await });
 
     let mut failed = false;
     while let Some(ev) = rx.recv().await {

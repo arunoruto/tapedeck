@@ -129,14 +129,30 @@ pub fn move_track(library: &Path, old_rel: &Path, new_rel: &Path) -> Result<()> 
     let (from, to) = (library.join(old_rel), library.join(new_rel));
     std::fs::create_dir_all(to.parent().context("template has no directory part")?)?;
     move_file(&from, &to)?;
-    let mut dir = from.parent();
+    prune(library, from.parent());
+    Ok(())
+}
+
+/// Delete a track's file (if it is still there) and drop directories left empty.
+pub fn remove_track(library: &Path, rel: &Path) -> Result<()> {
+    let file = library.join(rel);
+    match std::fs::remove_file(&file) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e).with_context(|| format!("deleting {}", file.display())),
+    }
+    prune(library, file.parent());
+    Ok(())
+}
+
+/// Remove `dir` and its parents while they are empty, stopping at the library root.
+fn prune(library: &Path, mut dir: Option<&Path>) {
     while let Some(d) = dir
         && d != library
         && std::fs::remove_dir(d).is_ok()
     {
         dir = d.parent();
     }
-    Ok(())
 }
 
 /// rename, falling back to copy + delete when source and library are on different filesystems.

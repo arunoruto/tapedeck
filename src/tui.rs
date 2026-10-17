@@ -1,6 +1,7 @@
 //! `td tui` (and plain `td`): browse the library as artist › album › song, and the playlists
-//! next to their tracks. Read-only for now: it opens the database directly, so it works
-//! whether or not the daemon runs, and nothing here can break the library.
+//! next to their tracks. Browsing reads the database directly; actions run the same `Command`s
+//! the CLI has, through the daemon when it is up, else in-process, and every destructive one
+//! asks first.
 
 use std::time::Duration;
 
@@ -13,10 +14,15 @@ use ratatui::{
     text::Line,
     widgets::{Block, Cell, List, ListItem, ListState, Paragraph, Row, Table, TableState, Tabs},
 };
+use tokio::{runtime::Handle, sync::mpsc, task::JoinHandle};
 
 use crate::{
+    Event as TdEvent,
+    cli::{Command, RemoteCmd},
     config::Config,
+    daemon,
     db::{Db, Playlist, Track},
+    render,
     sync::{self, RemotePlaylist},
 };
 
@@ -27,6 +33,7 @@ enum Tab {
 }
 
 const TABS: [&str; 2] = ["Library", "Playlists"];
+const SPINNER: [char; 4] = ['|', '/', '-', '\\'];
 
 /// What the playlists tab's left pane can point at.
 enum Entry {
@@ -34,14 +41,40 @@ enum Entry {
     Remote { target: &'static str, playlist: RemotePlaylist },
 }
 
+enum Mode {
+    Normal,
+    Search,
+    /// Asking for a download URL for one track.
+    Prompt {
+        track: i64,
+        input: String,
+    },
+    /// `y` does `then`, anything else cancels.
+    Confirm {
+        msg: String,
+        then: Pending,
+    },
+}
+
+enum Pending {
+    Run(Vec<Command>),
+    Quit,
+}
+
 struct Tui {
+    config: Config,
+    rt: Handle,
     db: Db,
     tab: Tab,
     /// Focused pane within the tab, left to right.
     pane: usize,
-    searching: bool,
+    mode: Mode,
     query: String,
     status: String,
+    /// The running action, if any, and its event stream.
+    job: Option<(JoinHandle<()>, mpsc::Receiver<TdEvent>)>,
+    log: Vec<String>,
+    ticks: usize,
     /// Library tab. The three columns are derived from `all` on every draw, see `shelf`.
     all: Vec<Track>,
     artists: ListState,
@@ -72,12 +105,17 @@ pub async fn run(config: Config) -> Result<()> {
         }
     }
     let mut tui = Tui {
+        config,
+        rt: Handle::current(),
         db,
         tab: Tab::Library,
         pane: 0,
-        searching: false,
+        mode: Mode::Normal,
         query: String::new(),
         status: String::new(),
+        job: None,
+        log: vec![],
+        ticks: 0,
         all: vec![],
         artists: ListState::default().with_selected(Some(0)),
         albums: ListState::default().with_selected(Some(0)),
@@ -127,12 +165,29 @@ fn shelf<'a>(all: &'a [Track], query: &str, ai: usize, bi: usize) -> Shelf<'a> {
     Shelf { artists, albums, songs }
 }
 
+fn sync_now(no_fetch: bool) -> Command {
+    Command::Sync { playlist: None, no_push: false, no_fetch }
+}
+
 impl Tui {
     fn reload(&mut self, remote: Vec<(&'static str, RemotePlaylist)>) -> Result<()> {
         self.all = self.db.all_tracks()?;
         self.entries = self.db.playlists()?.into_iter().map(Entry::Local).collect();
         self.entries.extend(remote.into_iter().map(|(target, playlist)| Entry::Remote { target, playlist }));
         self.select_left(self.left.selected().unwrap_or(0).min(self.entries.len().saturating_sub(1)))
+    }
+
+    /// Reload from the database, keeping the remote lists already fetched.
+    fn refresh(&mut self) -> Result<()> {
+        let remote: Vec<_> = self
+            .entries
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Remote { target, playlist } => Some((*target, playlist.clone())),
+                _ => None,
+            })
+            .collect();
+        self.reload(remote)
     }
 
     fn shelf(&self) -> Shelf<'_> {
@@ -161,6 +216,10 @@ impl Tui {
         }
     }
 
+    fn selected_entry(&self) -> Option<&Entry> {
+        (self.tab == Tab::Playlists).then(|| self.entries.get(self.left.selected()?))?
+    }
+
     fn panes(&self) -> usize {
         match self.tab {
             Tab::Library => 3,
@@ -181,8 +240,50 @@ impl Tui {
         self.right.select(Some(0));
     }
 
+    /// Run commands one after another on the runtime; events land in the log as they arrive.
+    fn start(&mut self, cmds: Vec<Command>) {
+        if self.job.is_some() {
+            self.status = "busy: wait for the running action".into();
+            return;
+        }
+        let (tx, rx) = mpsc::channel(64);
+        let cfg = self.config.clone();
+        let handle = self.rt.spawn(async move {
+            for cmd in cmds {
+                if let Err(e) = daemon::dispatch(&cfg, cmd, tx.clone()).await {
+                    let _ = tx.send(TdEvent::Error { msg: format!("{e:#}") }).await;
+                    break;
+                }
+            }
+        });
+        self.job = Some((handle, rx));
+        self.status.clear();
+    }
+
+    fn poll_job(&mut self) -> Result<()> {
+        let Some((handle, rx)) = &mut self.job else { return Ok(()) };
+        while let Ok(ev) = rx.try_recv() {
+            match ev {
+                TdEvent::Info { msg } => self.log.push(msg),
+                TdEvent::Error { msg } => self.log.push(format!("error: {msg}")),
+                TdEvent::Data { data } => self.log.extend(render::render(&data).lines().map(str::to_string)),
+            }
+        }
+        if handle.is_finished() {
+            self.job = None;
+            self.log.push("done".into());
+            self.refresh()?;
+        }
+        if self.log.len() > 500 {
+            self.log.drain(..self.log.len() - 500);
+        }
+        Ok(())
+    }
+
     fn event_loop(&mut self, terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
         loop {
+            self.poll_job()?;
+            self.ticks += 1;
             terminal.draw(|f| self.draw(f))?;
             if !event::poll(Duration::from_millis(250))? {
                 continue;
@@ -191,61 +292,155 @@ impl Tui {
             if key.kind != KeyEventKind::Press {
                 continue;
             }
-            if self.searching {
-                match key.code {
-                    KeyCode::Esc => {
-                        self.query.clear();
-                        self.searching = false;
-                    }
-                    KeyCode::Enter => self.searching = false,
-                    KeyCode::Backspace => {
-                        self.query.pop();
-                    }
-                    KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => self.query.clear(),
-                    KeyCode::Char(c) => self.query.push(c),
-                    _ => {}
-                }
-                self.reset_selection();
-                continue;
-            }
             let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-            let half = (terminal.size().map(|s| s.height).unwrap_or(40) as i64 / 2).max(1);
-            match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => return Ok(()),
-                KeyCode::Char('c') if ctrl => return Ok(()),
-                KeyCode::Char('/') => self.searching = true,
-                KeyCode::Tab | KeyCode::Char('2') if self.tab == Tab::Library => self.set_tab(Tab::Playlists),
-                KeyCode::Tab | KeyCode::BackTab | KeyCode::Char('1') if self.tab == Tab::Playlists => {
-                    self.set_tab(Tab::Library)
+            match std::mem::replace(&mut self.mode, Mode::Normal) {
+                Mode::Search => {
+                    self.mode = Mode::Search;
+                    match key.code {
+                        KeyCode::Esc => {
+                            self.query.clear();
+                            self.mode = Mode::Normal;
+                        }
+                        KeyCode::Enter => self.mode = Mode::Normal,
+                        KeyCode::Backspace => {
+                            self.query.pop();
+                        }
+                        KeyCode::Char('u') if ctrl => self.query.clear(),
+                        KeyCode::Char(c) => self.query.push(c),
+                        _ => {}
+                    }
+                    self.reset_selection();
                 }
-                KeyCode::BackTab => self.set_tab(Tab::Playlists),
-                KeyCode::Left | KeyCode::Char('h') => self.pane = self.pane.saturating_sub(1),
-                KeyCode::Right | KeyCode::Char('l') | KeyCode::Enter => {
-                    self.pane = (self.pane + 1).min(self.panes() - 1)
+                Mode::Prompt { track, mut input } => match key.code {
+                    KeyCode::Esc => self.status = "cancelled".into(),
+                    KeyCode::Enter if !input.trim().is_empty() => {
+                        self.start(vec![Command::Source { track, url: input.trim().to_string() }, sync_now(true)]);
+                    }
+                    KeyCode::Enter => {}
+                    code => {
+                        match code {
+                            KeyCode::Backspace => {
+                                input.pop();
+                            }
+                            KeyCode::Char('u') if ctrl => input.clear(),
+                            KeyCode::Char(c) => input.push(c),
+                            _ => {}
+                        }
+                        self.mode = Mode::Prompt { track, input };
+                    }
+                },
+                Mode::Confirm { then, .. } => match (key.code, then) {
+                    (KeyCode::Char('y') | KeyCode::Char('Y'), Pending::Run(cmds)) => self.start(cmds),
+                    (KeyCode::Char('y') | KeyCode::Char('Y'), Pending::Quit) => return Ok(()),
+                    _ => self.status = "cancelled".into(),
+                },
+                Mode::Normal => {
+                    if self.normal_key(key.code, ctrl, terminal)? {
+                        return Ok(());
+                    }
                 }
-                KeyCode::Char('r') => {
-                    let remote: Vec<_> = self
-                        .entries
-                        .iter()
-                        .filter_map(|e| match e {
-                            Entry::Remote { target, playlist } => Some((*target, playlist.clone())),
-                            _ => None,
-                        })
-                        .collect();
-                    self.reload(remote)?;
-                    self.status = "reloaded".into();
+            }
+        }
+    }
+
+    /// Normal-mode key; `Ok(true)` means quit.
+    fn normal_key(&mut self, code: KeyCode, ctrl: bool, terminal: &ratatui::DefaultTerminal) -> Result<bool> {
+        let half = (terminal.size().map(|s| s.height).unwrap_or(40) as i64 / 2).max(1);
+        match code {
+            // Quitting kills an in-process action half way; the daemon's would finish on its own.
+            KeyCode::Char('q') | KeyCode::Esc if self.job.is_some() => {
+                self.mode =
+                    Mode::Confirm { msg: "An action is still running; quit anyway?".into(), then: Pending::Quit };
+            }
+            KeyCode::Char('q') | KeyCode::Esc => return Ok(true),
+            KeyCode::Char('c') if ctrl => return Ok(true),
+            KeyCode::Char('/') => self.mode = Mode::Search,
+            KeyCode::Tab | KeyCode::Char('2') if self.tab == Tab::Library => self.set_tab(Tab::Playlists),
+            KeyCode::Tab | KeyCode::BackTab | KeyCode::Char('1') if self.tab == Tab::Playlists => {
+                self.set_tab(Tab::Library)
+            }
+            KeyCode::BackTab => self.set_tab(Tab::Playlists),
+            KeyCode::Left | KeyCode::Char('h') => self.pane = self.pane.saturating_sub(1),
+            KeyCode::Right | KeyCode::Char('l') | KeyCode::Enter => self.pane = (self.pane + 1).min(self.panes() - 1),
+            KeyCode::Char('r') => {
+                self.refresh()?;
+                self.status = "reloaded".into();
+            }
+            KeyCode::Down | KeyCode::Char('j') => self.step(1)?,
+            KeyCode::Up | KeyCode::Char('k') => self.step(-1)?,
+            KeyCode::Char('d') if ctrl => self.step(half)?,
+            KeyCode::Char('u') if ctrl => self.step(-half)?,
+            KeyCode::PageDown => self.step(half * 2)?,
+            KeyCode::PageUp => self.step(-half * 2)?,
+            KeyCode::Char('f') if ctrl => self.step(half * 2)?,
+            KeyCode::Char('b') if ctrl => self.step(-half * 2)?,
+            KeyCode::Home | KeyCode::Char('g') => self.step(i64::MIN / 2)?,
+            KeyCode::End | KeyCode::Char('G') => self.step(i64::MAX / 2)?,
+            // Actions. Everything that deletes or re-downloads goes through Confirm.
+            KeyCode::Char('S') => self.start(vec![sync_now(false)]),
+            KeyCode::Char('R') => {
+                if let Some((id, name)) = self.track_ref() {
+                    self.mode = Mode::Confirm {
+                        msg: format!("Re-download {name}? Its current file is dropped first."),
+                        then: Pending::Run(vec![Command::Retry { track: Some(id) }, sync_now(true)]),
+                    };
                 }
-                KeyCode::Down | KeyCode::Char('j') => self.step(1)?,
-                KeyCode::Up | KeyCode::Char('k') => self.step(-1)?,
-                KeyCode::Char('d') if ctrl => self.step(half)?,
-                KeyCode::Char('u') if ctrl => self.step(-half)?,
-                KeyCode::PageDown => self.step(half * 2)?,
-                KeyCode::PageUp => self.step(-half * 2)?,
-                KeyCode::Char('f') if ctrl => self.step(half * 2)?,
-                KeyCode::Char('b') if ctrl => self.step(-half * 2)?,
-                KeyCode::Home | KeyCode::Char('g') => self.step(i64::MIN / 2)?,
-                KeyCode::End | KeyCode::Char('G') => self.step(i64::MAX / 2)?,
-                _ => {}
+            }
+            KeyCode::Char('s') => {
+                if let Some((track, _)) = self.track_ref() {
+                    self.mode = Mode::Prompt { track, input: String::new() };
+                }
+            }
+            KeyCode::Char('p') => match self.selected_entry() {
+                Some(Entry::Local(p)) => {
+                    self.mode = Mode::Confirm {
+                        msg: format!("Push {} to every sync target?", p.name),
+                        then: Pending::Run(vec![Command::Push { playlist: p.id.to_string(), to: None }]),
+                    }
+                }
+                _ => self.status = "select a local playlist to push".into(),
+            },
+            KeyCode::Char('d') => match (self.pane, self.selected_entry()) {
+                (0, Some(Entry::Remote { target, playlist })) => {
+                    self.mode = Mode::Confirm {
+                        msg: format!("Delete {} on {target}? A backup is written first.", playlist.title),
+                        then: Pending::Run(vec![Command::Remote {
+                            action: RemoteCmd::Rm {
+                                pattern: playlist.title.clone(),
+                                to: Some(target.to_string()),
+                                yes: true,
+                                include_smart: true,
+                                no_backup: false,
+                                out: None,
+                            },
+                        }]),
+                    }
+                }
+                (0, Some(Entry::Local(_))) => {
+                    self.status = "local playlists mirror ListenBrainz; delete tracks or remote copies instead".into()
+                }
+                _ => {
+                    if let Some((id, name)) = self.track_ref() {
+                        self.mode = Mode::Confirm {
+                            msg: format!(
+                                "Delete {name} and its file? A later sync re-adds it if a playlist still lists it."
+                            ),
+                            then: Pending::Run(vec![Command::Rm { track: id }]),
+                        };
+                    }
+                }
+            },
+            _ => {}
+        }
+        Ok(false)
+    }
+
+    fn track_ref(&mut self) -> Option<(i64, String)> {
+        match self.selected_track() {
+            Some(t) => Some((t.id, format!("{} - {}", t.artist, t.title))),
+            None => {
+                self.status = "no track selected".into();
+                None
             }
         }
     }
@@ -281,7 +476,7 @@ impl Tui {
 
     fn draw(&mut self, f: &mut Frame) {
         let [tabs, body, detail, help] =
-            Layout::vertical([Constraint::Length(1), Constraint::Min(5), Constraint::Length(3), Constraint::Length(1)])
+            Layout::vertical([Constraint::Length(1), Constraint::Min(5), Constraint::Length(5), Constraint::Length(1)])
                 .areas(f.area());
         let filter = if self.query.is_empty() { String::new() } else { format!("  /{}", self.query) };
         f.render_widget(
@@ -299,12 +494,26 @@ impl Tui {
             }
         }
         self.draw_detail(f, detail);
-        let keys = if self.searching {
-            " type to filter · Enter keep · Esc clear · ^U wipe "
-        } else {
-            " Tab/1/2 tabs · hjkl move · ^D/^U half page · ^F/^B page · g/G ends · / filter · r reload · q quit "
+        let line = match &self.mode {
+            Mode::Search => Line::from(" type to filter · Enter keep · Esc clear · ^U wipe ".dim()),
+            Mode::Prompt { input, .. } => Line::from(vec![" download URL: ".bold(), input.clone().into(), "▏".dim()]),
+            Mode::Confirm { msg, .. } => Line::from(vec![format!(" {msg} ").yellow(), "[y/N]".bold()]),
+            Mode::Normal => Line::from(vec![
+                " Tab tabs · hjkl · ^D/^U ^F/^B g/G · / filter · r reload · ".dim(),
+                "S".bold(),
+                " sync · ".dim(),
+                "R".bold(),
+                " re-download · ".dim(),
+                "s".bold(),
+                " source · ".dim(),
+                "p".bold(),
+                " push · ".dim(),
+                "d".bold(),
+                " delete · q quit ".dim(),
+                self.status.clone().yellow(),
+            ]),
         };
-        f.render_widget(Paragraph::new(Line::from(vec![keys.dim(), self.status.clone().yellow()])), help);
+        f.render_widget(Paragraph::new(line), help);
     }
 
     fn draw_library(&mut self, f: &mut Frame, area: Rect) {
@@ -420,24 +629,26 @@ impl Tui {
         f.render_stateful_widget(table, area, &mut self.right);
     }
 
+    /// Selected track on the first line, the last two log lines below it.
     fn draw_detail(&self, f: &mut Frame, area: Rect) {
-        let text = match self.selected_track() {
+        let selected = match self.selected_track() {
             Some(t) => {
                 let mut parts = vec![format!("#{}", t.id), format!("{} - {}", t.artist, t.title)];
-                if let Some(p) = &t.path {
-                    parts.push(p.clone());
-                }
-                if let Some(u) = &t.source_url {
-                    parts.push(u.clone());
-                }
-                if let Some(e) = &t.error {
-                    parts.push(format!("error: {e}"));
-                }
+                parts.extend(t.path.clone());
+                parts.extend(t.source_url.clone());
+                parts.extend(t.error.as_ref().map(|e| format!("error: {e}")));
                 parts.join("  ·  ")
             }
             None => String::new(),
         };
-        f.render_widget(Paragraph::new(text).block(Block::bordered().title(" Selected ")), area);
+        let tail = self.log.len().saturating_sub(2);
+        let mut lines = vec![Line::from(selected)];
+        lines.extend(self.log[tail..].iter().map(|l| Line::from(l.clone().dim())));
+        let title = match self.job {
+            Some(_) => format!(" Selected · running {} ", SPINNER[self.ticks % SPINNER.len()]),
+            None => " Selected ".to_string(),
+        };
+        f.render_widget(Paragraph::new(lines).block(Block::bordered().title(title)), area);
     }
 }
 

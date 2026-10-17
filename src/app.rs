@@ -68,7 +68,7 @@ impl App {
             Command::Daemon | Command::Tui => {
                 bail!("this command runs in the foreground; it cannot be sent to a running daemon")
             }
-            Command::Sync { playlist, no_push } => self.sync(playlist, no_push, tx).await,
+            Command::Sync { playlist, no_push, no_fetch } => self.sync(playlist, no_push, no_fetch, tx).await,
             Command::Status => {
                 let counts: serde_json::Map<_, _> =
                     self.db().status_counts()?.into_iter().map(|(k, v)| (k, json!(v))).collect();
@@ -88,9 +88,27 @@ impl App {
                 let p = self.db().find_playlist(&playlist)?.with_context(|| format!("no playlist {playlist:?}"))?;
                 self.push(&p, to.as_deref(), tx).await
             }
-            Command::Retry => {
+            Command::Retry { track: None } => {
                 let n = self.db().retry_failed()?;
                 info(tx, format!("{n} tracks reset to wanted")).await
+            }
+            Command::Retry { track: Some(id) } => {
+                let t = self.db().track_by_id(id)?.with_context(|| format!("no track with id {id}"))?;
+                if let Some(rel) = &t.path {
+                    library::remove_track(&self.config.library, Path::new(rel))?;
+                }
+                self.db().reset_track(id)?;
+                info(tx, format!("{} - {} reset to wanted; `td sync --no-fetch` downloads it", t.artist, t.title)).await
+            }
+            Command::Rm { track } => {
+                let t = self.db().track_by_id(track)?.with_context(|| format!("no track with id {track}"))?;
+                let playlists = self.db().playlists_with_track(track)?;
+                if let Some(rel) = &t.path {
+                    library::remove_track(&self.config.library, Path::new(rel))?;
+                }
+                self.db().delete_track(track)?;
+                self.rewrite_m3us(Some(&playlists))?;
+                info(tx, format!("removed {} - {}", t.artist, t.title)).await
             }
             Command::Source { track, url } => {
                 ensure!(self.db().set_source_url(track, &url)?, "no track with id {track}");
@@ -152,15 +170,7 @@ impl App {
         }
         if !dry_run {
             // Paths inside the m3u8 files may have changed; regenerate every one we wrote.
-            let playlists = self.db().playlists()?;
-            for p in playlists {
-                let Some(m3u) = p.m3u_path.as_deref().map(Path::new) else { continue };
-                let (Some(dir), Some(stem)) = (m3u.parent(), m3u.file_stem().and_then(|s| s.to_str())) else {
-                    continue;
-                };
-                let tracks = self.db().playlist_tracks(p.id)?;
-                m3u::write(dir, &cfg.library, stem, &p.name, &tracks)?;
-            }
+            self.rewrite_m3us(None)?;
         }
         let verb = if dry_run { "would move" } else { "moved" };
         info(tx, format!("{total} tracks checked, {moved} {verb}, {failed} failed")).await?;
@@ -385,6 +395,18 @@ impl App {
         Ok(())
     }
 
+    /// Rewrite the m3u8 of every playlist (or of `only` those ids) at its stored path.
+    fn rewrite_m3us(&self, only: Option<&[i64]>) -> Result<()> {
+        let playlists = self.db().playlists()?;
+        for p in playlists.iter().filter(|p| only.is_none_or(|ids| ids.contains(&p.id))) {
+            let Some(m3u) = p.m3u_path.as_deref().map(Path::new) else { continue };
+            let (Some(dir), Some(stem)) = (m3u.parent(), m3u.file_stem().and_then(|s| s.to_str())) else { continue };
+            let tracks = self.db().playlist_tracks(p.id)?;
+            m3u::write(dir, &self.config.library, stem, &p.name, &tracks)?;
+        }
+        Ok(())
+    }
+
     fn targets(&self, only: Option<&str>) -> Result<Vec<&dyn SyncTarget>> {
         let v: Vec<&dyn SyncTarget> =
             self.targets.iter().map(|t| t.as_ref()).filter(|t| only.is_none_or(|o| o == t.name())).collect();
@@ -396,12 +418,13 @@ impl App {
         Ok(v)
     }
 
-    async fn sync(&self, only: Option<String>, no_push: bool, tx: &Sender<Event>) -> Result<()> {
+    async fn sync(&self, only: Option<String>, no_push: bool, no_fetch: bool, tx: &Sender<Event>) -> Result<()> {
         let cfg = &self.config;
 
         // 1. ListenBrainz playlists → DB rows (new tracks resolved through MusicBrainz).
         let mut fetched: Vec<(i64, String)> = vec![];
-        for lb in listenbrainz::newest_per_kind(self.lb.created_for(&cfg.listenbrainz.user).await?) {
+        let lb_playlists = if no_fetch { vec![] } else { self.lb.created_for(&cfg.listenbrainz.user).await? };
+        for lb in listenbrainz::newest_per_kind(lb_playlists) {
             if !cfg.listenbrainz.playlists.contains(&lb.kind) || only.as_ref().is_some_and(|k| *k != lb.kind) {
                 continue;
             }
@@ -438,6 +461,7 @@ impl App {
         let wanted = self.db().wanted_tracks()?;
         info(tx, format!("{} tracks to download", wanted.len())).await?;
         let (mut done, mut failed) = (0, 0);
+        let mut done_ids = vec![];
         for t in &wanted {
             info(tx, format!("downloading {} - {}", t.artist, t.title)).await?;
             let result = async {
@@ -450,6 +474,7 @@ impl App {
                 Ok((rel, url)) => {
                     self.db().mark_ready(t.id, &rel.to_string_lossy(), url.as_deref())?;
                     done += 1;
+                    done_ids.push(t.id);
                 }
                 Err(e) => {
                     self.db().mark_failed(t.id, &format!("{e:#}"))?;
@@ -459,12 +484,24 @@ impl App {
             }
         }
 
-        // 3. m3u per playlist, then push.
+        // 3. m3u per playlist, then push: every playlist fetched above, plus any existing one
+        // that just gained a track (the `--no-fetch` case), rewritten at its stored path.
         let playlists = self.db().playlists()?;
-        for (pid, stem) in &fetched {
-            let Some(p) = playlists.iter().find(|p| p.id == *pid) else { continue };
+        for p in &playlists {
             let tracks = self.db().playlist_tracks(p.id)?;
-            let file = m3u::write(&cfg.playlist_dir(), &cfg.library, stem, &p.name, &tracks)?;
+            let stored = p.m3u_path.as_deref().map(Path::new);
+            let (dir, stem) = match fetched.iter().find(|(pid, _)| *pid == p.id) {
+                Some((_, stem)) => (cfg.playlist_dir(), stem.clone()),
+                None if tracks.iter().any(|t| done_ids.contains(&t.id)) => match stored {
+                    Some(m) => match (m.parent(), m.file_stem().and_then(|s| s.to_str())) {
+                        (Some(d), Some(s)) => (d.to_path_buf(), s.to_string()),
+                        _ => continue,
+                    },
+                    None => continue,
+                },
+                None => continue,
+            };
+            let file = m3u::write(&dir, &cfg.library, &stem, &p.name, &tracks)?;
             // Renamed since last time (naming scheme change): don't leave the stale copy behind.
             if let Some(old) = p.m3u_path.as_deref().map(Path::new)
                 && old != file

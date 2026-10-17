@@ -179,6 +179,28 @@ impl Db {
         Ok(())
     }
 
+    pub fn track_by_id(&self, id: i64) -> Result<Option<Track>> {
+        Ok(self.query_tracks(&format!("{TRACK_SELECT} WHERE t.id = ?1"), [id])?.pop())
+    }
+
+    pub fn playlists_with_track(&self, id: i64) -> Result<Vec<i64>> {
+        let mut st = self.0.prepare("SELECT playlist_id FROM playlist_tracks WHERE track_id = ?1")?;
+        let rows = st.query_map([id], |r| r.get(0))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Back to wanted with no file, whatever state it was in.
+    pub fn reset_track(&self, id: i64) -> Result<()> {
+        self.0.execute("UPDATE tracks SET status = 'wanted', path = NULL, error = NULL WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    pub fn delete_track(&self, id: i64) -> Result<()> {
+        self.0.execute("DELETE FROM playlist_tracks WHERE track_id = ?1", [id])?;
+        self.0.execute("DELETE FROM tracks WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
     pub fn retry_failed(&self) -> Result<usize> {
         Ok(self.0.execute("UPDATE tracks SET status = 'wanted', error = NULL WHERE status = 'failed'", [])?)
     }
