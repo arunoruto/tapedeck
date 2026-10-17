@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 512 320" width="512" height="320" role="img" aria-label="tapedeck logo: a cassette tape">
+  <defs>
+    <linearGradient id="shell" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2d3342"/>
+      <stop offset="1" stop-color="#15181f"/>
+    </linearGradient>
+    <clipPath id="label">
+      <rect x="48" y="44" width="416" height="172" rx="14"/>
+    </clipPath>
+    <g id="hub">
+      <circle r="16" fill="#f4efe6"/>
+      <circle r="7" fill="#15181f"/>
+      <g fill="#15181f">
+        <rect x="-2.5" y="-17" width="5" height="7"/>
+        <rect x="-2.5" y="-17" width="5" height="7" transform="rotate(60)"/>
+        <rect x="-2.5" y="-17" width="5" height="7" transform="rotate(120)"/>
+        <rect x="-2.5" y="-17" width="5" height="7" transform="rotate(180)"/>
+        <rect x="-2.5" y="-17" width="5" height="7" transform="rotate(240)"/>
+        <rect x="-2.5" y="-17" width="5" height="7" transform="rotate(300)"/>
+      </g>
+    </g>
+  </defs>
+
+  <!-- shell -->
+  <rect x="16" y="16" width="480" height="288" rx="22" fill="url(#shell)" stroke="#0b0d12" stroke-width="4"/>
+  <g fill="#0b0d12">
+    <circle cx="42" cy="42" r="5"/>
+    <circle cx="470" cy="42" r="5"/>
+    <circle cx="42" cy="278" r="5"/>
+    <circle cx="470" cy="278" r="5"/>
+  </g>
+
+  <!-- label with stripes -->
+  <g clip-path="url(#label)">
+    <rect x="48" y="44" width="416" height="172" fill="#f4efe6"/>
+    <rect x="48" y="44" width="416" height="16" fill="#e2574c"/>
+    <rect x="48" y="60" width="416" height="10" fill="#f0a63a"/>
+    <rect x="48" y="70" width="416" height="6" fill="#3aa6a0"/>
+  </g>
+  <text x="256" y="118" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, 'Liberation Mono', monospace" font-size="42" font-weight="700" letter-spacing="2" fill="#15181f">tapedeck</text>
+
+  <!-- window, tape and reels -->
+  <rect x="124" y="132" width="264" height="74" rx="37" fill="#15181f"/>
+  <path d="M190 140 L322 148 L322 190 L190 198 Z" fill="#4a2f1c"/>
+  <circle cx="190" cy="169" r="29" fill="#4a2f1c"/>
+  <circle cx="322" cy="169" r="21" fill="#4a2f1c"/>
+  <use xlink:href="#hub" href="#hub" x="190" y="169"/>
+  <use xlink:href="#hub" href="#hub" x="322" y="169"/>
+
+  <!-- bottom guide with head openings -->
+  <path d="M150 234 L362 234 L386 300 L126 300 Z" fill="#0f1116"/>
+  <g fill="#2d3342">
+    <circle cx="176" cy="272" r="8"/>
+    <circle cx="336" cy="272" r="8"/>
+    <rect x="226" y="258" width="60" height="26" rx="4"/>
+  </g>
+</svg>

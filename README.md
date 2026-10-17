@@ -1,16 +1,52 @@
-# tapedeck
+<a id="readme-top"></a>
 
-**Your ListenBrainz recommendations, downloaded, tagged, filed and in Plex — automatically.**
+<div align="center">
+  <a href="https://github.com/arunoruto/tapedeck">
+    <img src="assets/logo.svg" alt="tapedeck" width="360">
+  </a>
 
-[![CI](https://github.com/arunoruto/tapedeck/actions/workflows/ci.yml/badge.svg)](https://github.com/arunoruto/tapedeck/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/arunoruto/tapedeck?include_prereleases)](https://github.com/arunoruto/tapedeck/releases)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+  <h3 align="center">tapedeck</h3>
+
+  <p align="center">
+    Your ListenBrainz recommendations, downloaded, tagged, filed and in Plex. Automatically.
+    <br />
+    <a href="docs/configuration.md"><strong>Configuration reference »</strong></a>
+    <br />
+    <br />
+    <a href="https://github.com/arunoruto/tapedeck/releases">Releases</a>
+    ·
+    <a href="https://github.com/arunoruto/tapedeck/issues/new?labels=bug">Report a bug</a>
+    ·
+    <a href="https://github.com/arunoruto/tapedeck/issues/new?labels=enhancement">Request a feature</a>
+  </p>
+
+  [![CI](https://github.com/arunoruto/tapedeck/actions/workflows/ci.yml/badge.svg)](https://github.com/arunoruto/tapedeck/actions/workflows/ci.yml)
+  [![Release](https://img.shields.io/github/v/release/arunoruto/tapedeck?include_prereleases)](https://github.com/arunoruto/tapedeck/releases)
+  [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+  [![Cachix](https://img.shields.io/badge/cachix-arunoruto-5277C3?logo=nixos&logoColor=white)](https://arunoruto.cachix.org)
+</div>
+
+<details>
+  <summary>Table of contents</summary>
+  <ol>
+    <li><a href="#about">About</a></li>
+    <li><a href="#getting-started">Getting started</a></li>
+    <li><a href="#usage">Usage</a></li>
+    <li><a href="#running-as-a-service">Running as a service</a></li>
+    <li><a href="#roadmap">Roadmap</a></li>
+    <li><a href="#contributing">Contributing</a></li>
+    <li><a href="#license">License</a></li>
+    <li><a href="#acknowledgments">Acknowledgments</a></li>
+  </ol>
+</details>
+
+## About
 
 ListenBrainz builds you a fresh *Weekly Jams* and *Weekly Exploration* every week.
-tapedeck turns them into music you actually own: it looks every track up on MusicBrainz,
-downloads it with yt-dlp, writes proper tags, files it into a clean `Artist/Album/Track`
-tree, keeps an m3u8 per playlist and pushes the playlist to Plex. Run it once, or let the
-daemon do it every few hours.
+tapedeck turns them into music you own. It looks every track up on MusicBrainz, downloads
+it with yt-dlp, writes proper tags, files it into a clean `Artist/Album/Track` tree, keeps
+an m3u8 per playlist and pushes the playlist to Plex. Run it once, or let the daemon do it
+every few hours.
 
 ```
  ListenBrainz ──▶ MusicBrainz ──▶ yt-dlp ──▶ tags ──▶ Artist/Album (Year)/01 - Title.opus
@@ -19,21 +55,18 @@ daemon do it every few hours.
                                                              └──▶ Plex playlist
 ```
 
-The binary is called `td`.
-
-## Why
-
 I used [Explo](https://github.com/LumePart/Explo) for this and wanted a few things it
 doesn't do: a real library layout instead of a flat folder of files, a database so a song
 that shows up in three weekly playlists is downloaded once, a daemon with a CLI that talks
-to it, and output that scripts (or an AI agent) can parse. tapedeck is that, in Rust.
+to it, and output that scripts (or an AI agent) can parse. tapedeck is that, in Rust. The
+binary is called `td`.
 
-## Features
+**What you get**
 
-- **Library, not a dump.** Lidarr-style path templates:
+- **A library, not a dump.** Lidarr-style path templates:
   `{album_artist}/{album} ({year})/{track:02} - {title}.{ext}` by default, yours if you prefer.
 - **Metadata from MusicBrainz**, keyed by the recording IDs ListenBrainz already gives you.
-  Consistent artist/album/year/track number, and a hard guarantee against duplicates.
+  Consistent artist, album, year and track number, and a hard guarantee against duplicates.
 - **Tags written by tapedeck**, not by whatever the download site had. Album artist and
   track artist are kept apart, so featured guests don't split an album across folders.
 - **An m3u8 for every fetched playlist**, dated like ListenBrainz names them. Your
@@ -43,13 +76,32 @@ to it, and output that scripts (or an AI agent) can parse. tapedeck is that, in 
   socket; every other `td` command talks to it if it's running and does the work itself if
   not.
 - **`--json` everywhere.** One JSON object per line, for scripts and agents.
-- **SQLite as the single source of truth**, with `token_file` support so secrets stay out
-  of your config.
+- **Secrets stay out of the config** with `token_file`, and SQLite is the single source of
+  truth.
 - **Nix first-class**: flake, binary cache, Home Manager module with a systemd user service.
 
-## Install
+### Built with
 
-**Prebuilt binaries** (Linux and macOS, x86_64 and arm64) are attached to each
+[Rust](https://www.rust-lang.org) · [clap](https://github.com/clap-rs/clap) ·
+[rusqlite](https://github.com/rusqlite/rusqlite) · [lofty](https://github.com/Serial-ATA/lofty-rs) ·
+[reqwest](https://github.com/seanmonstar/reqwest) · [tokio](https://tokio.rs) ·
+[yt-dlp](https://github.com/yt-dlp/yt-dlp) · [MusicBrainz](https://musicbrainz.org) ·
+[ListenBrainz](https://listenbrainz.org)
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+## Getting started
+
+### Prerequisites
+
+- A [ListenBrainz](https://listenbrainz.org) account with listening history, so it has
+  recommendations to generate.
+- `yt-dlp` and `ffmpeg` on `PATH`, unless you install through Nix, which bundles them.
+- Optionally a Plex server and its token.
+
+### Installation
+
+**Prebuilt binaries** for Linux and macOS (x86_64 and arm64) are attached to each
 [release](https://github.com/arunoruto/tapedeck/releases). With
 [bin](https://github.com/marcosnils/bin):
 
@@ -70,17 +122,14 @@ nix run github:arunoruto/tapedeck -- --help
 cargo install --git https://github.com/arunoruto/tapedeck
 ```
 
-Binary and cargo installs need `yt-dlp` and `ffmpeg` on `PATH`. The Nix package wraps
-them in.
-
-## Quick start
+### First sync
 
 ```sh
 mkdir -p ~/.config/tapedeck
 curl -o ~/.config/tapedeck/config.toml \
   https://raw.githubusercontent.com/arunoruto/tapedeck/main/config.example.toml
 $EDITOR ~/.config/tapedeck/config.toml     # library path, ListenBrainz user, Plex token
-td sync --no-push                          # first run: download and file, skip Plex
+td sync --no-push                          # download and file, skip Plex
 td sync                                    # then with Plex
 ```
 
@@ -105,7 +154,9 @@ section = "Music"
 Everything else has a default. The full reference is in
 [docs/configuration.md](docs/configuration.md).
 
-## Commands
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+## Usage
 
 | Command | What it does |
 |---|---|
@@ -119,22 +170,7 @@ Everything else has a default. The full reference is in
 
 Add `--json` to any of them for newline-delimited JSON instead of text.
 
-## Running as a service
-
-With Home Manager, import `tapedeck.homeModules.default` from the flake and:
-
-```nix
-programs.tapedeck = {
-  enable = true;
-  settings = { library = "/srv/music"; listenbrainz.user = "you"; /* ... */ };
-};
-services.tapedeck.enable = true;
-```
-
-Without Nix, [`systemd/tapedeck.service`](systemd/tapedeck.service) is a user unit for a
-cargo-installed `td`.
-
-## What the library looks like
+After a sync the library looks like this:
 
 ```
 /srv/music/
@@ -149,17 +185,43 @@ cargo-installed `td`.
     └── Weekly Exploration for you, week of 2026-10-13 Mon.m3u8
 ```
 
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+## Running as a service
+
+With Home Manager, import `tapedeck.homeModules.default` from the flake and:
+
+```nix
+programs.tapedeck = {
+  enable = true;
+  settings = { library = "/srv/music"; listenbrainz.user = "you"; /* ... */ };
+};
+services.tapedeck.enable = true;
+```
+
+Without Nix, [`systemd/tapedeck.service`](systemd/tapedeck.service) is a user unit for a
+cargo-installed `td`. Either way, `td status` from a shell talks to the running daemon over
+its socket.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
 ## Roadmap
 
 Working today: the whole pipeline above, yt-dlp as the download backend, Plex as the sync
-target. Next, roughly in order:
+target.
 
-1. A TUI for browsing the library and playlists and watching downloads.
-2. More sync targets (Jellyfin, plain m3u export) and download backends (Soulseek).
-   Both are small traits; see [docs/architecture.md](docs/architecture.md#extension-points).
-3. Playback, eventually.
+- [ ] A TUI for browsing the library and playlists and watching downloads
+- [ ] More sync targets: Jellyfin, plain m3u export
+- [ ] More download backends: Soulseek
+- [ ] Playback, eventually
 
-## Development
+Sync targets and download backends are each one small trait; see
+[docs/architecture.md](docs/architecture.md#extension-points). Open
+[issues](https://github.com/arunoruto/tapedeck/issues) for the rest.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
+
+## Contributing
 
 ```sh
 nix develop                        # rust toolchain, yt-dlp, ffmpeg
@@ -168,9 +230,23 @@ cargo test -- --include-ignored    # also the live ListenBrainz / MusicBrainz te
 nix build                          # what CI and the cache build; runs the offline suite
 ```
 
-Design notes live in [docs/architecture.md](docs/architecture.md). Releases are cut by
-pushing a `v*` tag matching `Cargo.toml`; CI builds the binaries and publishes them.
+CI runs `cargo fmt --check`, `clippy -D warnings`, the full test suite and the Nix build.
+Design notes and the reasoning behind the non-obvious choices are in
+[docs/architecture.md](docs/architecture.md). Releases are cut by pushing a `v*` tag matching
+`Cargo.toml`; CI builds the binaries and publishes them.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
 
 ## License
 
-[MIT](LICENSE)
+Distributed under the MIT License. See [`LICENSE`](LICENSE).
+
+## Acknowledgments
+
+- [Explo](https://github.com/LumePart/Explo), which proved the idea and whose users I was one of.
+- [MusicBrainz](https://musicbrainz.org) and [ListenBrainz](https://listenbrainz.org) for the
+  open data this depends on.
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp) for doing the hard part.
+- [Best-README-Template](https://github.com/othneildrew/Best-README-Template) for the layout.
+
+<p align="right">(<a href="#readme-top">back to top</a>)</p>
