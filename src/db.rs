@@ -212,9 +212,13 @@ impl Db {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
-    /// Back to wanted with no file, whatever state it was in.
+    /// Back to wanted with no file and no remembered source, whatever state it was in: the next
+    /// download searches afresh. `td source` is how a URL is pinned on purpose.
     pub fn reset_track(&self, id: i64) -> Result<()> {
-        self.0.execute("UPDATE tracks SET status = 'wanted', path = NULL, error = NULL WHERE id = ?1", [id])?;
+        self.0.execute(
+            "UPDATE tracks SET status = 'wanted', path = NULL, source_url = NULL, error = NULL WHERE id = ?1",
+            [id],
+        )?;
         Ok(())
     }
 

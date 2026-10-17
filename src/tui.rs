@@ -458,7 +458,7 @@ impl Tui {
             KeyCode::Char('R') => {
                 if let Some((id, name)) = self.track_ref() {
                     self.mode = Mode::Confirm {
-                        msg: format!("Re-download {name}? Its current file is dropped first."),
+                        msg: format!("Re-download {name} from a fresh search? Its current file is dropped first."),
                         then: Pending::Run(vec![Command::Retry { track: Some(id) }, sync_now(true)]),
                     };
                 }

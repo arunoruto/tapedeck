@@ -218,6 +218,17 @@ recording MBIDs for free. Looking each one up once gives consistent artist, albu
 and track number, which is what makes a path template and clean tags possible. The
 download is just the audio.
 
+**Which upload gets downloaded.** Explo's weak spot was the music video: a six-minute upload
+with three minutes of song. tapedeck asks YouTube Music's song results first (album audio,
+real lengths), looks the top hits up once more for their durations and takes the one within
+20 s of the MusicBrainz recording, preferring an exactly matching title; only when none fits
+does it fall back to the plain YouTube search with the same closest-length rule. After the
+download the file's own length is checked against the recording and anything more than 20 s
+off is deleted and reported as failed, so a wrong cut never lands in the library. Both
+candidates are tried in turn, since YouTube refuses the odd download with a 403. `td retry ID`
+drops the remembered URL and searches afresh; `td source ID URL` pins a URL for the cases
+nothing automatic gets right.
+
 **yt-dlp as a subprocess, not a library.** It changes weekly to keep up with sites;
 shelling out means `yt-dlp -U` fixes things without a rebuild.
 

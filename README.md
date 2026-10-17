@@ -75,8 +75,9 @@ binary is called `td`.
   track artist are kept apart, so featured guests don't split an album across folders.
 - **An m3u8 per playlist**, kept in step with the playlist on Plex and readable by any player,
   with last week's copy archived. Tracks that drop out of a playlist stay in your library.
-- **Downloads matched by length** against the MusicBrainz recording, so you get the album
-  audio rather than the music video with the two-minute intro.
+- **Downloads from YouTube Music's song results first**, matched by length against the
+  MusicBrainz recording and checked again after the download, so you get the album audio
+  rather than the music video with the two-minute intro.
 - **Plex sync** that scans the library, matches files and recreates the playlist.
 - **Daemon or one-shot, same CLI.** `td daemon` runs on an interval and listens on a Unix
   socket; every other `td` command talks to it if it's running and does the work itself if

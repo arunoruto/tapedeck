@@ -70,7 +70,7 @@ pub enum Command {
         yes: bool,
     },
     /// Reset failed tracks to wanted so the next sync retries them; with an id, re-download that
-    /// one track (its current file is dropped).
+    /// one track from a fresh search (its current file and remembered URL are dropped).
     Retry { track: Option<i64> },
     /// Delete a track's file and forget it. A later sync re-adds it if a playlist still lists it.
     Rm { track: i64 },
