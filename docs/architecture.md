@@ -94,8 +94,10 @@ of an hour.
 `td import DIR` is for a folder that predates tapedeck. Each audio file is identified by its
 `MUSICBRAINZ_TRACKID` tag when present, otherwise by a MusicBrainz search on artist and
 title (from tags, else from an `Artist - Title` file name) scored by how close the file's
-length is to the recording's. Files are then grouped by recording, because Explo drops the
-same song into every weekly folder it appears in. A recording the library already has makes
+length is to the recording's. A file the search cannot place still joins the group of a
+resolved file with the same artist, title and length, which is how an untagged copy of a tagged
+file finds its recording. Files are then grouped by recording, because Explo drops the same
+song into every weekly folder it appears in. A recording the library already has makes
 every copy a duplicate; otherwise the copy closest to the recording's length is filed exactly
 like a download would be and the rest are duplicates. Duplicates are reported, or deleted with
 `--apply --delete-duplicates`. The default is a dry run, which reports the same groups

@@ -299,19 +299,19 @@ impl App {
         // same track into every playlist folder it appears in, so groups are the norm.
         let mut groups: Vec<(String, Vec<&library::Found>)> = vec![];
         let mut index: HashMap<String, usize> = HashMap::new();
+        // Files the search could not place; `None` is no match, `Some` a failed lookup.
+        let mut pending: Vec<(&library::Found, Option<anyhow::Error>)> = vec![];
         for f in &found {
             let mbid = match &f.recording_mbid {
                 Some(m) => m.clone(),
                 None => match self.mb.search_recording(&f.artist, &f.title, f.duration_ms).await {
                     Ok(Some(m)) => m,
                     Ok(None) => {
-                        info(tx, format!("no match: {}", f.path.display())).await?;
-                        unresolved += 1;
+                        pending.push((f, None));
                         continue;
                     }
                     Err(e) => {
-                        info(tx, format!("lookup failed: {}: {e:#}", f.path.display())).await?;
-                        lookup_failed += 1;
+                        pending.push((f, Some(e)));
                         continue;
                     }
                 },
@@ -321,6 +321,31 @@ impl App {
                 None => {
                     index.insert(mbid.clone(), groups.len());
                     groups.push((mbid, vec![f]));
+                }
+            }
+        }
+        // An untagged copy of a file that did resolve (same artist and title, same length
+        // within a few seconds) joins that group instead of being a miss.
+        for (f, err) in pending {
+            let twin = groups.iter().position(|(_, files)| {
+                files.iter().any(|g| {
+                    name_key(g) == name_key(f)
+                        && matches!((g.duration_ms, f.duration_ms), (Some(a), Some(b)) if (a - b).abs() <= 5_000)
+                })
+            });
+            match (twin, err) {
+                (Some(i), _) => {
+                    info(tx, format!("matched by name: {} ~ {}", f.path.display(), groups[i].1[0].path.display()))
+                        .await?;
+                    groups[i].1.push(f);
+                }
+                (None, None) => {
+                    info(tx, format!("no match: {}", f.path.display())).await?;
+                    unresolved += 1;
+                }
+                (None, Some(e)) => {
+                    info(tx, format!("lookup failed: {}: {e:#}", f.path.display())).await?;
+                    lookup_failed += 1;
                 }
             }
         }
@@ -543,6 +568,11 @@ impl App {
     fn db(&self) -> std::sync::MutexGuard<'_, Db> {
         self.db.lock().unwrap_or_else(|p| p.into_inner())
     }
+}
+
+/// What two copies of one song look like from their tags or file names.
+fn name_key(f: &library::Found) -> (String, String) {
+    (f.artist.to_lowercase(), crate::musicbrainz::strip_feat(&f.title).to_lowercase())
 }
 
 /// Point backup m3u8/json files under `dir` at the new locations of moved (or deleted-as-duplicate)
