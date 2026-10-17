@@ -178,7 +178,8 @@ Everything else has a default. The full reference is in
 | `td remote ls` / `td remote rm GLOB [--yes]` | List or bulk-delete playlists on a sync target |
 | `td daemon` | Run as a service: listen on the socket, sync every `sync.interval` |
 
-Add `--json` to any of them for newline-delimited JSON instead of text.
+Output is a table or plain lines; add `--json` to any command for newline-delimited JSON
+events instead, which is what scripts and agents should parse.
 
 After a sync the library looks like this:
 

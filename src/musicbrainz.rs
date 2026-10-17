@@ -62,10 +62,11 @@ impl MusicBrainz {
     /// `pick_search_hit` sort it out; a popular song has dozens of recordings (live, remasters,
     /// compilation copies, covers).
     pub async fn search_recording(&self, artist: &str, title: &str, length_ms: Option<i64>) -> Result<Option<String>> {
-        let q = format!("recording:\"{}\" AND artist:\"{}\"", lucene(title), lucene(artist));
+        let title = strip_feat(title);
+        let q = format!("recording:\"{}\" AND artist:\"{}\"", lucene(&title), lucene(artist));
         let url = format!("{API}/recording/?query={}&limit=100&fmt=json", urlencoding::encode(&q));
         let v = self.get(&url, &format!("search {artist} - {title}")).await?;
-        Ok(pick_search_hit(&v, artist, length_ms))
+        Ok(pick_search_hit(&v, artist, &title, length_ms))
     }
 }
 
@@ -73,15 +74,52 @@ fn lucene(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-fn pick_search_hit(v: &Value, artist: &str, length_ms: Option<i64>) -> Option<String> {
+/// "APT. (feat. Bruno Mars)" → "APT."; MusicBrainz keeps guests in the artist credit, not the title.
+pub fn strip_feat(title: &str) -> String {
+    let lower = title.to_lowercase();
+    let cut = ["(feat.", "(feat ", "[feat.", "[feat ", "(ft.", "[ft.", " feat. ", " feat ", " ft. "]
+        .iter()
+        .filter_map(|m| lower.find(m))
+        .min();
+    match cut {
+        Some(p) => title[..p].trim().to_string(),
+        None => title.to_string(),
+    }
+}
+
+/// Words that mark a different take ("Counting Stars (Voicedude rmx)"). A hit may only carry
+/// them if the query title does too.
+const VERSION_WORDS: &[&str] = &[
+    "remix",
+    "rmx",
+    "mix",
+    "edit",
+    "live",
+    "version",
+    "instrumental",
+    "acoustic",
+    "demo",
+    "karaoke",
+    "mashup",
+    "cover",
+];
+
+fn version_words(title: &str) -> Vec<&str> {
+    let lower = title.to_lowercase();
+    VERSION_WORDS.iter().copied().filter(|w| lower.split(|c: char| !c.is_alphanumeric()).any(|tok| tok == *w)).collect()
+}
+
+fn pick_search_hit(v: &Value, artist: &str, title: &str, length_ms: Option<i64>) -> Option<String> {
     const OFF_KINDS: &[&str] = &["karaoke", "instrumental", "live", "cover", "tribute", "remix"];
     let wanted = artist.to_lowercase();
+    let allowed = version_words(title);
     let hits: Vec<&Value> = v["recordings"]
         .as_array()?
         .iter()
         .filter(|r| r["score"].as_i64().unwrap_or(0) >= 80)
         // Covers match the search too (the work links back to the original); keep the artist's own.
         .filter(|r| wanted.is_empty() || credit(&r["artist-credit"]).0.to_lowercase().contains(&wanted))
+        .filter(|r| version_words(r["title"].as_str().unwrap_or("")).iter().all(|w| allowed.contains(w)))
         .filter(|r| {
             let dis = r["disambiguation"].as_str().unwrap_or("").to_lowercase();
             !OFF_KINDS.iter().any(|k| dis.contains(k))
@@ -97,7 +135,8 @@ fn pick_search_hit(v: &Value, artist: &str, length_ms: Option<i64>) -> Option<St
         };
         let releases = r["releases"].as_array().cloned().unwrap_or_default();
         let on_album = releases.iter().any(|rel| {
-            rel["release-group"]["primary-type"].as_str() == Some("Album")
+            rel["status"].as_str() == Some("Official")
+                && rel["release-group"]["primary-type"].as_str() == Some("Album")
                 && rel["release-group"]["secondary-types"].as_array().is_none_or(|t| t.is_empty())
         });
         (!on_album, drift, -(releases.len() as i64))
@@ -110,7 +149,7 @@ pub fn parse_recording(v: &Value, mbid: &str) -> Result<Recording> {
     let releases = v["releases"].as_array().cloned().unwrap_or_default();
     let release = releases.iter().min_by_key(|r| release_rank(r, &artist_mbid)).cloned().unwrap_or(Value::Null);
     let (album_artist, album_artist_mbid) = match &release["artist-credit"] {
-        Value::Array(a) if !a.is_empty() => credit(&release["artist-credit"]),
+        Value::Array(a) if !a.is_empty() => canonical_credit(&release["artist-credit"]),
         _ => (artist.clone(), artist_mbid.clone()),
     };
     let year = release["date"].as_str().and_then(|d| d.get(..4)).and_then(|y| y.parse().ok());
@@ -138,10 +177,20 @@ pub fn parse_recording(v: &Value, mbid: &str) -> Result<Recording> {
 
 /// Joined artist credit ("A feat. B") and the first artist's MBID.
 fn credit(v: &Value) -> (String, String) {
+    credit_with(v, |c| c["name"].as_str())
+}
+
+/// Same, but with each artist's canonical name instead of the credited spelling, so a Japanese
+/// edition credited to "ザ・チェインスモーカーズ" still files under "The Chainsmokers".
+fn canonical_credit(v: &Value) -> (String, String) {
+    credit_with(v, |c| c["artist"]["name"].as_str().or(c["name"].as_str()))
+}
+
+fn credit_with(v: &Value, name: impl Fn(&Value) -> Option<&str>) -> (String, String) {
     let credits = v.as_array().cloned().unwrap_or_default();
     let name = credits
         .iter()
-        .map(|c| format!("{}{}", c["name"].as_str().unwrap_or(""), c["joinphrase"].as_str().unwrap_or("")))
+        .map(|c| format!("{}{}", name(c).unwrap_or(""), c["joinphrase"].as_str().unwrap_or("")))
         .collect::<String>();
     let id = credits.first().and_then(|c| c["artist"]["id"].as_str()).unwrap_or("").to_string();
     (name, id)
@@ -149,8 +198,13 @@ fn credit(v: &Value) -> (String, String) {
 
 /// Which release a recording gets filed under. Lower wins, compared left to right:
 /// official > no secondary types (compilation, live, DJ-mix, soundtrack, ...) >
-/// released by the track's own artist > album > EP > single > earliest date.
-fn release_rank(r: &Value, track_artist_mbid: &str) -> (u8, u8, u8, u8, (u16, u8, u8)) {
+/// released by the track's own artist > not a regional/deluxe/remastered edition >
+/// album > EP > single > earliest date.
+fn release_rank(r: &Value, track_artist_mbid: &str) -> (u8, u8, u8, u8, u8, (u16, u8, u8)) {
+    const EDITION_WORDS: &[&str] = &["edition", "deluxe", "japan", "tour", "anniversary", "expanded", "remaster"];
+    let label =
+        format!("{} {}", r["title"].as_str().unwrap_or(""), r["disambiguation"].as_str().unwrap_or("")).to_lowercase();
+    let edition = if EDITION_WORDS.iter().any(|w| label.contains(w)) { 1 } else { 0 };
     let official = if r["status"].as_str() == Some("Official") { 0 } else { 1 };
     let plain = match r["release-group"]["secondary-types"].as_array() {
         Some(t) if !t.is_empty() => 1,
@@ -166,7 +220,7 @@ fn release_rank(r: &Value, track_artist_mbid: &str) -> (u8, u8, u8, u8, (u16, u8
         Some("Single") => 2,
         _ => 3,
     };
-    (official, plain, own, ptype, date_key(r["date"].as_str().unwrap_or("")))
+    (official, plain, own, edition, ptype, date_key(r["date"].as_str().unwrap_or("")))
 }
 
 /// "1993-02-22" → (1993, 2, 22). Missing parts sort after known ones, so a precise date beats a
@@ -188,7 +242,7 @@ mod tests {
         json!({
             "id": id, "title": id, "status": status, "date": date,
             "release-group": {"primary-type": ptype, "secondary-types": secondary},
-            "artist-credit": [{"name": artist, "joinphrase": "", "artist": {"id": artist}}],
+            "artist-credit": [{"name": "credited-as", "joinphrase": "", "artist": {"id": artist, "name": artist}}],
             "media": [{"tracks": [{"position": 7}]}]
         })
     }
@@ -210,9 +264,11 @@ mod tests {
             release("single", "Official", "1992-09-21", "Single", &[], "radiohead"),
             release("pablo-honey", "Official", "1993-02-22", "Album", &[], "radiohead"),
             release("reissue", "Official", "2009-03-24", "Album", &[], "radiohead"),
+            release("Pablo Honey: Japan Edition", "Official", "1992-12-01", "Album", &[], "radiohead"),
         ]);
         let r = parse_recording(&v, "rec").unwrap();
-        assert_eq!(r.album_mbid, "pablo-honey");
+        assert_eq!(r.album_mbid, "pablo-honey", "earlier Japan edition loses to the plain album");
+        assert_eq!(r.album_artist, "radiohead", "canonical artist name, not the credited spelling");
         assert_eq!((r.year, r.track_no, r.length_ms), (Some(1993), Some(7), Some(238000)));
         assert_eq!(r.artist_mbid.as_deref(), Some("radiohead"));
     }
@@ -249,25 +305,35 @@ mod tests {
         let q = json!([{"name": "Queen", "artist": {"id": "q"}}]);
         let v = json!({"recordings": [
             {"id": "cover", "score": 100, "length": 238000, "artist-credit": [{"name": "Philharmonix"}],
-             "releases": [{"release-group": {"primary-type": "Album"}}]},
+             "releases": [{"status": "Official", "release-group": {"primary-type": "Album"}}]},
             {"id": "live", "score": 100, "length": 410000, "artist-credit": q, "releases": [{}, {}]},
             {"id": "karaoke", "artist-credit": q, "score": 100, "length": 238500, "disambiguation": "karaoke version", "releases": [{}]},
-            {"id": "studio", "artist-credit": q, "score": 95, "length": 238000, "releases": [{"release-group": {"primary-type": "Album"}}, {}]},
+            {"id": "studio", "artist-credit": q, "score": 95, "length": 238000, "releases": [{"status": "Official", "release-group": {"primary-type": "Album"}}, {}]},
             {"id": "remaster", "artist-credit": q, "score": 95, "length": 238000, "releases": [{"release-group": {"primary-type": "Album", "secondary-types": ["Compilation"]}}, {}, {}, {}, {}]},
             {"id": "comp-copy", "artist-credit": q, "score": 95, "length": 240000, "releases": [{}]},
             {"id": "junk", "artist-credit": q, "score": 40, "length": 238000, "releases": []}
         ]});
         assert_eq!(
-            pick_search_hit(&v, "Queen", Some(240000)).as_deref(),
+            pick_search_hit(&v, "Queen", "Don't Stop Me Now", Some(240000)).as_deref(),
             Some("studio"),
             "album take beats an exact-length compilation copy"
         );
         assert_eq!(
-            pick_search_hit(&v, "queen", None).as_deref(),
+            pick_search_hit(&v, "queen", "Don't Stop Me Now", None).as_deref(),
             Some("studio"),
             "no length: studio album beats a bigger pile of compilations"
         );
-        assert_eq!(pick_search_hit(&json!({"recordings": [{"id": "junk", "score": 40}]}), "", None), None);
+        assert_eq!(pick_search_hit(&json!({"recordings": [{"id": "junk", "score": 40}]}), "", "x", None), None);
+        let rmx = json!({"recordings": [
+            {"id": "rmx", "title": "Counting Stars (Voicedude rmx)", "artist-credit": q, "score": 100, "length": 257000,
+             "releases": [{"status": "Official", "release-group": {"primary-type": "Album"}}]},
+            {"id": "orig", "title": "Counting Stars", "artist-credit": q, "score": 100, "length": 257000, "releases": [{}]}
+        ]});
+        assert_eq!(pick_search_hit(&rmx, "Queen", "Counting Stars", Some(257000)).as_deref(), Some("orig"));
+        assert_eq!(pick_search_hit(&rmx, "Queen", "Counting Stars (Voicedude rmx)", None).as_deref(), Some("rmx"));
+        assert_eq!(strip_feat("APT. (feat. Bruno Mars)"), "APT.");
+        assert_eq!(strip_feat("Blame feat. John Newman"), "Blame");
+        assert_eq!(strip_feat("Live and Let Die"), "Live and Let Die");
         assert_eq!(lucene(r#"Say "Hi""#), r#"Say \"Hi\""#);
     }
 

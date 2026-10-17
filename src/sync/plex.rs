@@ -145,6 +145,7 @@ impl SyncTarget for Plex {
                     id: p["ratingKey"].as_str()?.to_string(),
                     title: p["title"].as_str().unwrap_or("").to_string(),
                     tracks: p["leafCount"].as_i64().unwrap_or(0),
+                    smart: p["smart"].as_bool().unwrap_or(false) || p["smart"].as_i64() == Some(1),
                 })
             })
             .collect())

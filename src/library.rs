@@ -6,7 +6,7 @@ use anyhow::{Context, Result, bail};
 use lofty::config::WriteOptions;
 use lofty::prelude::*;
 use lofty::probe::Probe;
-use lofty::tag::{ItemKey, Tag};
+use lofty::tag::{ItemKey, ItemValue, Tag};
 
 use crate::db::Track;
 
@@ -192,10 +192,30 @@ fn inspect(path: &Path) -> Found {
             if let Some(t) = tag.title() {
                 title = t.to_string();
             }
-            recording_mbid = tag.get_string(ItemKey::MusicBrainzRecordingId).map(str::to_owned);
+            // Picard writes MUSICBRAINZ_TRACKID / a UFID frame, Explo writes ID3 TXXX frames called
+            // "MusicBrainz Track Id" or "MusicBrainz_TrackId"; all of them hold the recording MBID.
+            recording_mbid = tag.items().find_map(|item| {
+                let key: String =
+                    format!("{:?}", item.key()).to_lowercase().chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+                if !key.contains("musicbrainztrackid") && !key.contains("musicbrainzrecordingid") {
+                    return None;
+                }
+                let v = match item.value() {
+                    ItemValue::Text(s) | ItemValue::Locator(s) => s.trim().to_string(),
+                    ItemValue::Binary(b) => String::from_utf8(b.clone()).ok()?.trim().to_string(),
+                };
+                is_uuid(&v).then_some(v)
+            });
         }
     }
     Found { path: path.to_path_buf(), artist, title, recording_mbid, duration_ms }
+}
+
+fn is_uuid(s: &str) -> bool {
+    s.len() == 36
+        && s.chars()
+            .enumerate()
+            .all(|(i, c)| if matches!(i, 8 | 13 | 18 | 23) { c == '-' } else { c.is_ascii_hexdigit() })
 }
 
 /// "Artist - Title" → ("Artist", "Title"); anything else is all title.
@@ -237,6 +257,8 @@ mod tests {
         assert_eq!(sanitize("..."), "_");
         assert_eq!(parse_stem("Bicep - Apricots"), ("Bicep".into(), "Apricots".into()));
         assert_eq!(parse_stem("Apricots"), (String::new(), "Apricots".into()));
+        assert!(is_uuid("5dcf0f17-d13b-47c1-8386-fea1f5e25875"));
+        assert!(!is_uuid("not-an-id"));
         assert!(render_template("{nope}", &t, "opus").is_err());
         assert!(validate_template("{artist}/{title}.{ext}").is_ok());
     }

@@ -44,7 +44,7 @@ fn status_runs_in_process_and_emits_json() {
 
     let out = td(&config, &["playlists"]);
     assert!(out.status.success());
-    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "[]");
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "(nothing)");
 
     let out = td(&config, &["push", "nope"]);
     assert!(!out.status.success());

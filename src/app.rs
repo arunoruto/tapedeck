@@ -173,10 +173,14 @@ impl App {
                     data(tx, json!({ "target": target.name(), "playlists": playlists })).await?;
                 }
             }
-            RemoteCmd::Rm { pattern, to, yes } => {
+            RemoteCmd::Rm { pattern, to, yes, include_smart } => {
                 for target in self.targets(to.as_deref())? {
-                    let hits: Vec<_> =
-                        target.list_playlists().await?.into_iter().filter(|p| glob_match(&pattern, &p.title)).collect();
+                    let hits: Vec<_> = target
+                        .list_playlists()
+                        .await?
+                        .into_iter()
+                        .filter(|p| glob_match(&pattern, &p.title) && (include_smart || !p.smart))
+                        .collect();
                     if !yes {
                         info(
                             tx,
@@ -347,6 +351,12 @@ impl App {
             let Some(p) = playlists.iter().find(|p| p.id == *pid) else { continue };
             let tracks = self.db().playlist_tracks(p.id)?;
             let file = m3u::write(&cfg.playlist_dir(), &cfg.library, stem, &p.name, &tracks)?;
+            // Renamed since last time (naming scheme change): don't leave the stale copy behind.
+            if let Some(old) = p.m3u_path.as_deref().map(Path::new)
+                && old != file
+            {
+                let _ = std::fs::remove_file(old);
+            }
             self.db().set_playlist_m3u(p.id, &file.to_string_lossy())?;
             info(tx, format!("wrote {}", file.display())).await?;
             if !no_push {

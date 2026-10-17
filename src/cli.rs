@@ -88,5 +88,8 @@ pub enum RemoteCmd {
         to: Option<String>,
         #[arg(long)]
         yes: bool,
+        /// Also match the server's own smart playlists.
+        #[arg(long)]
+        include_smart: bool,
     },
 }

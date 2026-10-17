@@ -8,6 +8,7 @@ pub mod library;
 pub mod listenbrainz;
 pub mod m3u;
 pub mod musicbrainz;
+pub mod render;
 pub mod sync;
 
 pub use app::{App, Event};

@@ -13,6 +13,8 @@ pub struct RemotePlaylist {
     pub id: String,
     pub title: String,
     pub tracks: i64,
+    /// Server-generated (Plex smart playlists); never bulk-deleted unless asked.
+    pub smart: bool,
 }
 
 pub mod plex;

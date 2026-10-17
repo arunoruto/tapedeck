@@ -42,7 +42,7 @@ async fn main() -> Result<()> {
         }
         match ev {
             Event::Info { msg } if !cli.json => eprintln!("{msg}"),
-            Event::Data { data } if !cli.json => println!("{}", serde_json::to_string_pretty(&data)?),
+            Event::Data { data } if !cli.json => println!("{}", tapedeck::render::render(&data)),
             Event::Error { msg } => {
                 failed = true;
                 if !cli.json {
