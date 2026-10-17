@@ -742,19 +742,24 @@ impl Tui {
         let list = List::new(items).block(self.pane(" Albums ", self.pane == 1)).highlight_style(highlight);
         f.render_stateful_widget(list, b, &mut self.albums);
 
+        // The selected row is styled by hand: a table-wide highlight would paint over the badge.
+        let selected = self.songs.selected();
         let rows: Vec<Row> = shelf
             .songs
             .iter()
-            .map(|t| {
-                Row::new(vec![
+            .enumerate()
+            .map(|(i, t)| {
+                let sel = Some(i) == selected;
+                let row = Row::new(vec![
                     Cell::from(Span::styled(
                         t.track_no.map(|n| n.to_string()).unwrap_or_default(),
                         Style::new().fg(th.muted),
                     )),
-                    self.badge(&t.status),
+                    self.badge(&t.status, sel),
                     Cell::from(t.title.clone()),
                     Cell::from(Span::styled(mmss(t.duration_ms), Style::new().fg(th.muted))),
-                ])
+                ]);
+                if sel { row.style(highlight) } else { row }
             })
             .collect();
         let table = Table::new(
@@ -762,8 +767,7 @@ impl Tui {
             [Constraint::Length(3), Constraint::Length(8), Constraint::Min(10), Constraint::Length(5)],
         )
         .header(self.header(["#", "STATUS", "TITLE", "LEN"]))
-        .block(self.pane(" Songs ", self.pane == 2))
-        .row_highlight_style(highlight);
+        .block(self.pane(" Songs ", self.pane == 2));
         f.render_stateful_widget(table, c, &mut self.songs);
     }
 
@@ -811,12 +815,16 @@ impl Tui {
             );
             return;
         }
+        let selected = self.right.selected();
+        let highlight = Style::new().bg(th.selection_bg).fg(th.selection_fg).bold();
         let rows: Vec<Row> = self
             .visible()
             .into_iter()
-            .map(|t| {
-                Row::new(vec![
-                    self.badge(&t.status),
+            .enumerate()
+            .map(|(i, t)| {
+                let sel = Some(i) == selected;
+                let row = Row::new(vec![
+                    self.badge(&t.status, sel),
                     Cell::from(t.artist.clone()),
                     Cell::from(t.title.clone()),
                     Cell::from(Span::styled(t.album.clone(), Style::new().fg(th.muted))),
@@ -825,7 +833,8 @@ impl Tui {
                         Style::new().fg(th.muted),
                     )),
                     Cell::from(Span::styled(mmss(t.duration_ms), Style::new().fg(th.muted))),
-                ])
+                ]);
+                if sel { row.style(highlight) } else { row }
             })
             .collect();
         let table = Table::new(
@@ -840,8 +849,7 @@ impl Tui {
             ],
         )
         .header(self.header(["STATUS", "ARTIST", "TITLE", "ALBUM", "YEAR", "LEN"]))
-        .block(self.pane(" Tracks ", self.pane == 1))
-        .row_highlight_style(Style::new().bg(th.selection_bg).fg(th.selection_fg).bold());
+        .block(self.pane(" Tracks ", self.pane == 1));
         f.render_stateful_widget(table, area, &mut self.right);
     }
 
@@ -891,15 +899,21 @@ impl Tui {
         Row::new(cols.map(|c| Cell::from(Span::styled(c, Style::new().fg(self.theme.title).bold()))))
     }
 
-    /// Status as a coloured pill.
-    fn badge(&self, status: &str) -> Cell<'static> {
+    /// Status as a coloured pill; on the selected row it flips to the accent so it stands out
+    /// from the other rows' pills as well as from the highlight.
+    fn badge(&self, status: &str, selected: bool) -> Cell<'static> {
         let th = &self.theme;
         let colour = match status {
             "ready" => th.ready,
             "failed" => th.failed,
             _ => th.wanted,
         };
-        Cell::from(Span::styled(format!(" {status} "), Style::new().bg(colour).fg(th.selection_bg).bold()))
+        let style = if selected {
+            Style::new().bg(th.accent).fg(th.selection_bg).bold()
+        } else {
+            Style::new().bg(colour).fg(th.selection_bg).bold()
+        };
+        Cell::from(Span::styled(format!(" {status} "), style))
     }
 }
 
