@@ -2,7 +2,10 @@
 
 <div align="center">
   <a href="https://github.com/arunoruto/tapedeck">
-    <img src="assets/logo.svg" alt="tapedeck" width="200">
+    <picture>
+      <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
+      <img src="assets/logo-light.svg" alt="tapedeck" width="220">
+    </picture>
   </a>
 
   <h3 align="center">tapedeck</h3>

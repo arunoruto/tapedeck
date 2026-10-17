@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 160" width="256" height="160" role="img" aria-label="tapedeck" fill="none" stroke="#e8e3d8" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round">
+  <defs>
+    <clipPath id="label"><rect x="26" y="24" width="204" height="82" rx="10"/></clipPath>
+  </defs>
+  <!-- shell -->
+  <rect x="8" y="8" width="240" height="144" rx="20"/>
+  <!-- label: outlined, with the stripes kept as solid bands -->
+  <g clip-path="url(#label)" stroke="none">
+    <rect x="26" y="24" width="204" height="10" fill="#e2574c"/>
+    <rect x="26" y="34" width="204" height="7" fill="#f0a63a"/>
+    <rect x="26" y="41" width="204" height="4" fill="#3aa6a0"/>
+  </g>
+  <rect x="26" y="24" width="204" height="82" rx="10"/>
+  <!-- window, tape and reels -->
+  <rect x="60" y="56" width="136" height="40" rx="20"/>
+  <circle cx="94" cy="76" r="14"/>
+  <circle cx="162" cy="76" r="14"/>
+  <circle cx="94" cy="76" r="3" fill="#e8e3d8" stroke="none"/>
+  <circle cx="162" cy="76" r="3" fill="#e8e3d8" stroke="none"/>
+  <line x1="94" y1="62" x2="162" y2="62"/>
+  <line x1="94" y1="90" x2="162" y2="90"/>
+  <!-- bottom guide -->
+  <path d="M92 118 L164 118 L176 152 M80 152 L92 118"/>
+  <circle cx="104" cy="138" r="2.5" fill="#e8e3d8" stroke="none"/>
+  <circle cx="152" cy="138" r="2.5" fill="#e8e3d8" stroke="none"/>
+</svg>
