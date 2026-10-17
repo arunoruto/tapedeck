@@ -21,6 +21,10 @@ pub struct Track {
     pub status: String,
     pub source_url: Option<String>,
     pub error: Option<String>,
+    pub artist_mbid: Option<String>,
+    pub album_mbid: String,
+    pub album_artist_mbid: String,
+    pub duration_ms: Option<i64>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -53,11 +57,13 @@ pub struct NewTrack<'a> {
     pub album_mbid: &'a str,
     pub album: &'a str,
     pub year: Option<i64>,
+    pub artist_mbid: Option<&'a str>,
+    pub duration_ms: Option<i64>,
 }
 
 const TRACK_SELECT: &str = "
     SELECT t.id, t.recording_mbid, t.title, t.artist, ar.name, al.title, al.year, t.track_no,
-           t.path, t.status, t.source_url, t.error
+           t.path, t.status, t.source_url, t.error, t.artist_mbid, al.mbid, ar.mbid, t.duration_ms
     FROM tracks t
     JOIN albums al ON al.id = t.album_id
     JOIN artists ar ON ar.id = al.artist_id";
@@ -76,6 +82,10 @@ fn track_row(r: &Row) -> rusqlite::Result<Track> {
         status: r.get(9)?,
         source_url: r.get(10)?,
         error: r.get(11)?,
+        artist_mbid: r.get(12)?,
+        album_mbid: r.get(13)?,
+        album_artist_mbid: r.get(14)?,
+        duration_ms: r.get(15)?,
     })
 }
 
@@ -86,6 +96,15 @@ impl Db {
         }
         let conn = Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
         conn.execute_batch(include_str!("schema.sql"))?;
+        // Columns added after the first release. CREATE TABLE IF NOT EXISTS leaves existing
+        // databases alone, so add them here and ignore "duplicate column".
+        for col in ["artist_mbid TEXT", "duration_ms INTEGER"] {
+            if let Err(e) = conn.execute(&format!("ALTER TABLE tracks ADD COLUMN {col}"), [])
+                && !e.to_string().contains("duplicate column")
+            {
+                return Err(e.into());
+            }
+        }
         Ok(Db(conn))
     }
 
@@ -107,9 +126,11 @@ impl Db {
             |r| r.get(0),
         )?;
         Ok(self.0.query_row(
-            "INSERT INTO tracks (recording_mbid, album_id, title, artist, track_no) VALUES (?1, ?2, ?3, ?4, ?5)
-             ON CONFLICT(recording_mbid) DO UPDATE SET title = excluded.title, artist = excluded.artist RETURNING id",
-            params![t.recording_mbid, album_id, t.title, t.artist, t.track_no],
+            "INSERT INTO tracks (recording_mbid, album_id, title, artist, track_no, artist_mbid, duration_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(recording_mbid) DO UPDATE SET title = excluded.title, artist = excluded.artist,
+                 artist_mbid = excluded.artist_mbid, duration_ms = excluded.duration_ms RETURNING id",
+            params![t.recording_mbid, album_id, t.title, t.artist, t.track_no, t.artist_mbid, t.duration_ms],
             |r| r.get(0),
         )?)
     }
@@ -126,12 +147,21 @@ impl Db {
         )
     }
 
-    pub fn mark_ready(&self, id: i64, rel_path: &str) -> Result<()> {
+    pub fn mark_ready(&self, id: i64, rel_path: &str, source_url: Option<&str>) -> Result<()> {
         self.0.execute(
-            "UPDATE tracks SET status = 'ready', path = ?2, error = NULL WHERE id = ?1",
-            params![id, rel_path],
+            "UPDATE tracks SET status = 'ready', path = ?2, source_url = COALESCE(?3, source_url), error = NULL WHERE id = ?1",
+            params![id, rel_path, source_url],
         )?;
         Ok(())
+    }
+
+    /// Pin a download URL and queue the track again. Returns false if the id does not exist.
+    pub fn set_source_url(&self, id: i64, url: &str) -> Result<bool> {
+        let n = self.0.execute(
+            "UPDATE tracks SET source_url = ?2, status = 'wanted', error = NULL WHERE id = ?1",
+            params![id, url],
+        )?;
+        Ok(n == 1)
     }
 
     pub fn mark_failed(&self, id: i64, error: &str) -> Result<()> {
@@ -152,7 +182,7 @@ impl Db {
     pub fn upsert_playlist(&self, lb_mbid: &str, name: &str, kind: &str) -> Result<i64> {
         Ok(self.0.query_row(
             "INSERT INTO playlists (lb_mbid, name, kind) VALUES (?1, ?2, ?3)
-             ON CONFLICT(lb_mbid) DO UPDATE SET name = excluded.name, fetched_at = datetime('now') RETURNING id",
+             ON CONFLICT(lb_mbid) DO UPDATE SET name = excluded.name, fetched_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') RETURNING id",
             params![lb_mbid, name, kind],
             |r| r.get(0),
         )?)
@@ -224,7 +254,7 @@ impl Db {
     pub fn record_sync(&self, playlist_id: i64, target: &str, remote_id: &str) -> Result<()> {
         self.0.execute(
             "INSERT INTO playlist_syncs (playlist_id, target, remote_id) VALUES (?1, ?2, ?3)
-             ON CONFLICT(playlist_id, target) DO UPDATE SET remote_id = excluded.remote_id, synced_at = datetime('now')",
+             ON CONFLICT(playlist_id, target) DO UPDATE SET remote_id = excluded.remote_id, synced_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')",
             params![playlist_id, target, remote_id],
         )?;
         Ok(())
@@ -257,6 +287,8 @@ mod tests {
             album_mbid: "alb-1",
             album: "Album",
             year: Some(2020),
+            artist_mbid: Some("art-1"),
+            duration_ms: Some(241_000),
         };
         let id = db.insert_track(&new).unwrap();
         assert_eq!(db.insert_track(&new).unwrap(), id, "same recording MBID must not create a second row");
@@ -265,11 +297,19 @@ mod tests {
         let pid = db.upsert_playlist("pl-1", "Weekly Jams for u, week of X", "weekly-jams").unwrap();
         assert_eq!(db.upsert_playlist("pl-1", "renamed", "weekly-jams").unwrap(), pid);
         db.set_playlist_tracks(pid, &[id]).unwrap();
-        db.mark_ready(id, "A/Album (2020)/03 - Title.opus").unwrap();
+        db.mark_ready(id, "A/Album (2020)/03 - Title.opus", Some("https://y/v")).unwrap();
 
         let t = &db.playlist_tracks(pid).unwrap()[0];
         assert_eq!((t.status.as_str(), t.artist.as_str(), t.album_artist.as_str()), ("ready", "A feat. B", "A"));
         assert_eq!(t.path.as_deref(), Some("A/Album (2020)/03 - Title.opus"));
+        assert_eq!(
+            (t.source_url.as_deref(), t.duration_ms, t.album_mbid.as_str()),
+            (Some("https://y/v"), Some(241_000), "alb-1")
+        );
+        assert!(db.set_source_url(id, "https://y/other").unwrap());
+        assert!(!db.set_source_url(999, "x").unwrap());
+        assert_eq!(db.wanted_tracks().unwrap()[0].source_url.as_deref(), Some("https://y/other"));
+        db.mark_ready(id, "A/Album (2020)/03 - Title.opus", None).unwrap();
         assert!(db.wanted_tracks().unwrap().is_empty());
 
         db.record_sync(pid, "plex", "42").unwrap();

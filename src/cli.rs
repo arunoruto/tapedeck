@@ -48,4 +48,6 @@ pub enum Command {
     },
     /// Reset failed tracks to wanted so the next sync retries them.
     Retry,
+    /// Pin the download URL for a track (see `td search`) and queue it for the next sync.
+    Source { track: i64, url: String },
 }

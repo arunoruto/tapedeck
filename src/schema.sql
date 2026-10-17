@@ -21,12 +21,14 @@ CREATE TABLE IF NOT EXISTS tracks (
     album_id       INTEGER NOT NULL REFERENCES albums(id),
     title          TEXT NOT NULL,
     artist         TEXT NOT NULL,                          -- track artist credit; albums.artist_id is the album artist
+    artist_mbid    TEXT,                                   -- first credited artist of the recording
+    duration_ms    INTEGER,                                -- MusicBrainz recording length
     track_no       INTEGER,
     path           TEXT,                                   -- relative to library root
     status         TEXT NOT NULL DEFAULT 'wanted',         -- wanted | ready | failed
     source_url     TEXT,                                   -- explicit download URL, else the downloader searches
     error          TEXT,
-    added_at       TEXT NOT NULL DEFAULT (datetime('now'))
+    added_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 
 CREATE TABLE IF NOT EXISTS playlists (
@@ -35,7 +37,7 @@ CREATE TABLE IF NOT EXISTS playlists (
     name       TEXT NOT NULL,
     kind       TEXT NOT NULL,                              -- ListenBrainz source_patch: weekly-jams, daily-jams, ...
     m3u_path   TEXT,
-    fetched_at TEXT NOT NULL DEFAULT (datetime('now'))
+    fetched_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 
 CREATE TABLE IF NOT EXISTS playlist_tracks (
@@ -49,6 +51,6 @@ CREATE TABLE IF NOT EXISTS playlist_syncs (
     playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
     target      TEXT NOT NULL,
     remote_id   TEXT,
-    synced_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    synced_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     PRIMARY KEY (playlist_id, target)
 );

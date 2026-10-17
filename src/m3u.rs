@@ -6,16 +6,17 @@ use anyhow::Result;
 
 use crate::db::Track;
 
-/// Write `<playlist_dir>/<name>.m3u8` listing the ready tracks. Returns the file path.
-pub fn write(playlist_dir: &Path, library: &Path, name: &str, tracks: &[Track]) -> Result<PathBuf> {
+/// Write `<playlist_dir>/<stem>.m3u8` listing the ready tracks. Returns the file path.
+pub fn write(playlist_dir: &Path, library: &Path, stem: &str, title: &str, tracks: &[Track]) -> Result<PathBuf> {
     std::fs::create_dir_all(playlist_dir)?;
-    let mut body = format!("#EXTM3U\n#PLAYLIST:{name}\n");
+    let mut body = format!("#EXTM3U\n#PLAYLIST:{title}\n");
     for t in tracks.iter().filter(|t| t.status == "ready") {
         let Some(rel) = &t.path else { continue };
         let entry = relative_to(playlist_dir, &library.join(rel));
-        body.push_str(&format!("#EXTINF:-1,{} - {}\n{}\n", t.artist, t.title, entry.display()));
+        let secs = t.duration_ms.map(|ms| (ms + 500) / 1000).unwrap_or(-1);
+        body.push_str(&format!("#EXTINF:{secs},{} - {}\n{}\n", t.artist, t.title, entry.display()));
     }
-    let file = playlist_dir.join(format!("{}.m3u8", safe_name(name)));
+    let file = playlist_dir.join(format!("{}.m3u8", safe_name(stem)));
     std::fs::write(&file, body)?;
     Ok(file)
 }

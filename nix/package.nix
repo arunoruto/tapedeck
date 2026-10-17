@@ -1,7 +1,10 @@
-{ lib, rustPlatform, makeWrapper, cacert, versionCheckHook, nix-update-script, yt-dlp, ffmpeg-headless }:
+# The Rust build alone, with no reference to yt-dlp or ffmpeg. This is the expensive part and
+# what the binary cache holds; nix/wrapper.nix puts the runtime tools on PATH around it, so
+# swapping those never invalidates this derivation.
+{ lib, rustPlatform, cacert, versionCheckHook, nix-update-script }:
 
 rustPlatform.buildRustPackage (finalAttrs: {
-  pname = "tapedeck";
+  pname = "tapedeck-unwrapped";
   version = (lib.importTOML ../Cargo.toml).package.version;
 
   src = lib.fileset.toSource {
@@ -10,19 +13,11 @@ rustPlatform.buildRustPackage (finalAttrs: {
   };
   cargoLock.lockFile = ../Cargo.lock;
 
-  nativeBuildInputs = [ makeWrapper ];
-
   # Tests that need the network are #[ignore]d in the source and therefore skipped here.
   # The remaining suite covers parsing, the database, templating and the CLI.
   # The CLI tests start `td`, which builds its HTTPS client eagerly; rustls refuses to start
   # without a CA store, and the Linux sandbox has none, so hand it cacert's bundle.
   nativeCheckInputs = [ cacert ];
-
-  # yt-dlp needs ffmpeg for audio extraction; put both on td's PATH.
-  # ffmpeg-headless: the full ffmpeg drags in SDL/GUI libraries for ffplay, ~1 GiB we never use.
-  postInstall = ''
-    wrapProgram $out/bin/td --prefix PATH : ${lib.makeBinPath [ yt-dlp ffmpeg-headless ]}
-  '';
 
   nativeInstallCheckInputs = [ versionCheckHook ];
   doInstallCheck = true;

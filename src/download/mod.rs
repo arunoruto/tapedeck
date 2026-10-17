@@ -9,12 +9,18 @@ use crate::{config::Config, db::Track};
 
 pub mod ytdlp;
 
+pub struct Downloaded {
+    pub path: PathBuf,
+    /// Where the audio came from, so it can be inspected or reused.
+    pub source_url: Option<String>,
+}
+
 #[async_trait]
 pub trait Downloader: Send + Sync {
     fn name(&self) -> &'static str;
-    /// Fetch audio for `track` into `dest_dir` and return the file written.
+    /// Fetch audio for `track` into `dest_dir`. Honour `track.source_url` when set.
     /// Tagging and filing are not the downloader's job.
-    async fn download(&self, track: &Track, dest_dir: &Path) -> Result<PathBuf>;
+    async fn download(&self, track: &Track, dest_dir: &Path) -> Result<Downloaded>;
 }
 
 pub fn from_config(cfg: &Config) -> Result<Box<dyn Downloader>> {

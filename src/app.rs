@@ -2,7 +2,7 @@
 
 use std::{path::PathBuf, sync::Mutex};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::mpsc::Sender;
@@ -86,6 +86,10 @@ impl App {
                 let n = self.db().retry_failed()?;
                 info(tx, format!("{n} tracks reset to wanted")).await
             }
+            Command::Source { track, url } => {
+                ensure!(self.db().set_source_url(track, &url)?, "no track with id {track}");
+                info(tx, format!("track {track} queued for download from {url}")).await
+            }
         }
     }
 
@@ -93,18 +97,21 @@ impl App {
         let cfg = &self.config;
 
         // 1. ListenBrainz playlists → DB rows (new tracks resolved through MusicBrainz).
-        let mut fetched = vec![];
-        for lb in self.lb.created_for(&cfg.listenbrainz.user).await? {
+        let mut fetched: Vec<(i64, String)> = vec![];
+        for lb in listenbrainz::newest_per_kind(self.lb.created_for(&cfg.listenbrainz.user).await?) {
             if !cfg.listenbrainz.playlists.contains(&lb.kind) || only.as_ref().is_some_and(|k| *k != lb.kind) {
                 continue;
             }
             info(tx, format!("fetching {} ({})", lb.title, lb.kind)).await?;
+            let tracks = self.lb.tracks(&lb.mbid).await?;
+            let total = tracks.len();
             let mut ids = vec![];
-            for t in self.lb.tracks(&lb.mbid).await? {
+            for (i, t) in tracks.iter().enumerate() {
                 let existing = self.db().track_by_mbid(&t.recording_mbid)?;
                 let id = match existing {
                     Some(tr) => tr.id,
                     None => {
+                        info(tx, format!("resolving {}/{total}: {} - {}", i + 1, t.artist, t.title)).await?;
                         let r = self.mb.recording(&t.recording_mbid).await;
                         let r = match r {
                             Ok(r) => r,
@@ -123,6 +130,8 @@ impl App {
                             album_mbid: &r.album_mbid,
                             album: &r.album,
                             year: r.year,
+                            artist_mbid: r.artist_mbid.as_deref(),
+                            duration_ms: r.length_ms,
                         })?
                     }
                 };
@@ -130,39 +139,49 @@ impl App {
             }
             let pid = self.db().upsert_playlist(&lb.mbid, &lb.title, &lb.kind)?;
             self.db().set_playlist_tracks(pid, &ids)?;
-            fetched.push(pid);
+            // m3u8 file name: "Weekly Jams 2026-10-05", short and sortable; the LB title stays inside the file.
+            fetched.push((pid, format!("{} {}", display_name(&lb.kind), lb.date.get(..10).unwrap_or("undated"))));
         }
 
         // 2. Download whatever is still wanted, tag it, file it.
         let wanted = self.db().wanted_tracks()?;
         info(tx, format!("{} tracks to download", wanted.len())).await?;
+        let (mut done, mut failed) = (0, 0);
         for t in &wanted {
             info(tx, format!("downloading {} - {}", t.artist, t.title)).await?;
             let result = async {
-                let file = self.downloader.download(t, &cfg.tmp_dir()).await?;
-                library::file_track(&cfg.library, &cfg.path_template, t, &file)
+                let got = self.downloader.download(t, &cfg.tmp_dir()).await?;
+                let rel = library::file_track(&cfg.library, &cfg.path_template, t, &got.path)?;
+                Ok::<_, anyhow::Error>((rel, got.source_url))
             }
             .await;
             match result {
-                Ok(rel) => self.db().mark_ready(t.id, &rel.to_string_lossy())?,
+                Ok((rel, url)) => {
+                    self.db().mark_ready(t.id, &rel.to_string_lossy(), url.as_deref())?;
+                    done += 1;
+                }
                 Err(e) => {
                     self.db().mark_failed(t.id, &format!("{e:#}"))?;
                     info(tx, format!("failed {} - {}: {e:#}", t.artist, t.title)).await?;
+                    failed += 1;
                 }
             }
         }
 
         // 3. m3u per playlist, then push.
         let playlists = self.db().playlists()?;
-        for p in playlists.iter().filter(|p| fetched.contains(&p.id)) {
+        for (pid, stem) in &fetched {
+            let Some(p) = playlists.iter().find(|p| p.id == *pid) else { continue };
             let tracks = self.db().playlist_tracks(p.id)?;
-            let file = m3u::write(&cfg.playlist_dir(), &cfg.library, &p.name, &tracks)?;
+            let file = m3u::write(&cfg.playlist_dir(), &cfg.library, stem, &p.name, &tracks)?;
             self.db().set_playlist_m3u(p.id, &file.to_string_lossy())?;
             info(tx, format!("wrote {}", file.display())).await?;
             if !no_push {
                 self.push(p, None, tx).await?;
             }
         }
+        info(tx, format!("{done} downloaded, {failed} failed")).await?;
+        ensure!(failed == 0, "{failed} downloads failed; `td retry` queues them again, `td source` pins a URL");
         Ok(())
     }
 
@@ -173,7 +192,8 @@ impl App {
             .iter()
             .filter_map(|t| t.path.as_ref().map(|rel| self.config.library.join(rel)))
             .collect();
-        let title = display_name(&p.kind);
+        let title =
+            self.config.sync.playlist_title.replace("{name}", &display_name(&p.kind)).replace("{kind}", &p.kind);
         for target in self.targets.iter().filter(|t| only.is_none_or(|o| o == t.name())) {
             match target.sync_playlist(&title, &files).await {
                 Ok(remote) => {

@@ -48,16 +48,23 @@ impl Plex {
         self.call(reqwest::Method::GET, path).await
     }
 
-    async fn section_key(&self) -> Result<String> {
+    /// Section key plus the folders it scans, so we can tell up front whether our files are even visible.
+    async fn section(&self) -> Result<(String, Vec<String>)> {
         let v = self.get("/library/sections").await?;
-        v["MediaContainer"]["Directory"]
+        let dir = v["MediaContainer"]["Directory"]
             .as_array()
             .into_iter()
             .flatten()
             .find(|d| d["title"].as_str() == Some(&self.cfg.section))
-            .and_then(|d| d["key"].as_str())
-            .map(str::to_owned)
-            .with_context(|| format!("plex has no library section named {:?}", self.cfg.section))
+            .with_context(|| format!("plex has no library section named {:?}", self.cfg.section))?;
+        let key = dir["key"].as_str().context("plex section has no key")?.to_string();
+        let locations = dir["Location"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|l| l["path"].as_str().map(|p| p.trim_end_matches('/').to_string()))
+            .collect();
+        Ok((key, locations))
     }
 
     /// Kick a scan and wait for it to finish so freshly filed tracks are matchable.
@@ -131,7 +138,17 @@ impl SyncTarget for Plex {
     }
 
     async fn sync_playlist(&self, title: &str, files: &[PathBuf]) -> Result<String> {
-        let key = self.section_key().await?;
+        let (key, locations) = self.section().await?;
+        if let Some(first) = files.first() {
+            let remote = self.remote_path(first);
+            if !locations.iter().any(|l| remote.starts_with(l.as_str())) {
+                bail!(
+                    "{remote} is outside the folders plex section {:?} scans ({}); add the library to the section or fix sync.plex.path_map",
+                    self.cfg.section,
+                    locations.join(", ")
+                );
+            }
+        }
         self.refresh(&key).await?;
         let index = self.file_index(&key).await?;
 

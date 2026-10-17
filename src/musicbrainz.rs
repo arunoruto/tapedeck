@@ -12,12 +12,15 @@ const API: &str = "https://musicbrainz.org/ws/2";
 pub struct Recording {
     pub title: String,
     pub artist: String,
+    /// First credited artist of the recording.
+    pub artist_mbid: Option<String>,
     pub album_artist: String,
     pub album_artist_mbid: String,
     pub album: String,
     pub album_mbid: String,
     pub year: Option<i64>,
     pub track_no: Option<i64>,
+    pub length_ms: Option<i64>,
 }
 
 pub struct MusicBrainz {
@@ -30,6 +33,8 @@ impl MusicBrainz {
     }
 
     pub async fn recording(&self, mbid: &str) -> Result<Recording> {
+        // ponytail: a lookup returns at most 25 releases; for very popular recordings the studio album
+        // can fall outside that window. Switch to browsing /release?recording=<mbid>&limit=100 if it bites.
         let url = format!("{API}/recording/{mbid}?inc=artist-credits+releases+release-groups+media&fmt=json");
         let mut attempt = 0;
         let v: Value = loop {
@@ -51,7 +56,7 @@ impl MusicBrainz {
 pub fn parse_recording(v: &Value, mbid: &str) -> Result<Recording> {
     let (artist, artist_mbid) = credit(&v["artist-credit"]);
     let releases = v["releases"].as_array().cloned().unwrap_or_default();
-    let release = releases.iter().min_by_key(|r| release_rank(r)).cloned().unwrap_or(Value::Null);
+    let release = releases.iter().min_by_key(|r| release_rank(r, &artist_mbid)).cloned().unwrap_or(Value::Null);
     let (album_artist, album_artist_mbid) = match &release["artist-credit"] {
         Value::Array(a) if !a.is_empty() => credit(&release["artist-credit"]),
         _ => (artist.clone(), artist_mbid.clone()),
@@ -67,6 +72,7 @@ pub fn parse_recording(v: &Value, mbid: &str) -> Result<Recording> {
     Ok(Recording {
         title: v["title"].as_str().context("recording has no title")?.to_string(),
         artist,
+        artist_mbid: if artist_mbid.is_empty() { None } else { Some(artist_mbid) },
         album_artist,
         album_artist_mbid: if album_artist_mbid.is_empty() { mbid.to_string() } else { album_artist_mbid },
         album: release["title"].as_str().unwrap_or("Unknown Album").to_string(),
@@ -74,6 +80,7 @@ pub fn parse_recording(v: &Value, mbid: &str) -> Result<Recording> {
         album_mbid: release["id"].as_str().unwrap_or(mbid).to_string(),
         year,
         track_no,
+        length_ms: v["length"].as_i64(),
     })
 }
 
@@ -88,16 +95,36 @@ fn credit(v: &Value) -> (String, String) {
     (name, id)
 }
 
-/// Lower is better: official albums first, then by date, so reissues and compilations lose.
-fn release_rank(r: &Value) -> (u8, u8, String) {
+/// Which release a recording gets filed under. Lower wins, compared left to right:
+/// official > no secondary types (compilation, live, DJ-mix, soundtrack, ...) >
+/// released by the track's own artist > album > EP > single > earliest date.
+fn release_rank(r: &Value, track_artist_mbid: &str) -> (u8, u8, u8, u8, (u16, u8, u8)) {
     let official = if r["status"].as_str() == Some("Official") { 0 } else { 1 };
-    let album = match r["release-group"]["primary-type"].as_str() {
+    let plain = match r["release-group"]["secondary-types"].as_array() {
+        Some(t) if !t.is_empty() => 1,
+        _ => 0,
+    };
+    let own = match r["artist-credit"][0]["artist"]["id"].as_str() {
+        Some(id) if id == track_artist_mbid => 0,
+        _ => 1,
+    };
+    let ptype = match r["release-group"]["primary-type"].as_str() {
         Some("Album") => 0,
         Some("EP") => 1,
         Some("Single") => 2,
         _ => 3,
     };
-    (official, album, r["date"].as_str().unwrap_or("9999").to_string())
+    (official, plain, own, ptype, date_key(r["date"].as_str().unwrap_or("")))
+}
+
+/// "1993-02-22" → (1993, 2, 22). Missing parts sort after known ones, so a precise date beats a
+/// bare year in the same year, and no date at all sorts last.
+fn date_key(date: &str) -> (u16, u8, u8) {
+    let mut parts = date.split('-').map(|p| p.parse::<u16>().ok());
+    let y = parts.next().flatten().unwrap_or(9999);
+    let m = parts.next().flatten().unwrap_or(99) as u8;
+    let d = parts.next().flatten().unwrap_or(99) as u8;
+    (y, m, d)
 }
 
 #[cfg(test)]
@@ -105,35 +132,64 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn release(id: &str, status: &str, date: &str, ptype: &str, secondary: &[&str], artist: &str) -> Value {
+        json!({
+            "id": id, "title": id, "status": status, "date": date,
+            "release-group": {"primary-type": ptype, "secondary-types": secondary},
+            "artist-credit": [{"name": artist, "joinphrase": "", "artist": {"id": artist}}],
+            "media": [{"tracks": [{"position": 7}]}]
+        })
+    }
+
+    fn recording(releases: Vec<Value>) -> Value {
+        json!({
+            "title": "Creep", "length": 238000,
+            "artist-credit": [{"name": "Radiohead", "joinphrase": "", "artist": {"id": "radiohead"}}],
+            "releases": releases
+        })
+    }
+
     #[test]
-    fn picks_official_album_and_splits_artists() {
+    fn studio_album_beats_compilations_live_and_bare_years() {
+        let v = recording(vec![
+            release("va-comp", "Official", "1993", "Album", &["Compilation"], "va"),
+            release("live", "Official", "1992-01-01", "Album", &["Live"], "radiohead"),
+            release("bootleg", "Bootleg", "1990-01-01", "Album", &[], "radiohead"),
+            release("single", "Official", "1992-09-21", "Single", &[], "radiohead"),
+            release("pablo-honey", "Official", "1993-02-22", "Album", &[], "radiohead"),
+            release("reissue", "Official", "2009-03-24", "Album", &[], "radiohead"),
+        ]);
+        let r = parse_recording(&v, "rec").unwrap();
+        assert_eq!(r.album_mbid, "pablo-honey");
+        assert_eq!((r.year, r.track_no, r.length_ms), (Some(1993), Some(7), Some(238000)));
+        assert_eq!(r.artist_mbid.as_deref(), Some("radiohead"));
+    }
+
+    #[test]
+    fn undated_release_sorts_last_and_year_only_after_full_date() {
+        assert!(date_key("1993-02-22") < date_key("1993"));
+        assert!(date_key("1993") < date_key("1994-01-01"));
+        assert!(date_key("2020-05") < date_key(""));
+        let v = recording(vec![
+            release("undated", "Official", "", "Album", &[], "radiohead"),
+            release("dated", "Official", "2024-07-12", "Album", &[], "radiohead"),
+        ]);
+        assert_eq!(parse_recording(&v, "rec").unwrap().album_mbid, "dated");
+    }
+
+    #[test]
+    fn splits_track_and_album_artist() {
         let v = json!({
             "title": "Polyghost",
             "artist-credit": [
                 {"name": "Bonobo", "joinphrase": " feat. ", "artist": {"id": "bonobo-id"}},
                 {"name": "Nicole Miglis", "joinphrase": "", "artist": {"id": "nm-id"}}
             ],
-            "releases": [
-                {"id": "comp", "title": "Chill Hits 2023", "status": "Official", "date": "2023-01-01",
-                 "release-group": {"primary-type": "Album"},
-                 "artist-credit": [{"name": "Various Artists", "joinphrase": "", "artist": {"id": "va"}}],
-                 "media": [{"tracks": [{"position": 9}]}]},
-                {"id": "album", "title": "Fragments", "status": "Official", "date": "2022-01-14",
-                 "release-group": {"primary-type": "Album"},
-                 "artist-credit": [{"name": "Bonobo", "joinphrase": "", "artist": {"id": "bonobo-id"}}],
-                 "media": [{"tracks": [{"position": 1}]}]},
-                {"id": "single", "title": "Polyghost", "status": "Official", "date": "2021-11-01",
-                 "release-group": {"primary-type": "Single"}}
-            ]
+            "releases": [release("Fragments", "Official", "2022-01-14", "Album", &[], "bonobo-id")]
         });
         let r = parse_recording(&v, "rec").unwrap();
         assert_eq!(r.artist, "Bonobo feat. Nicole Miglis");
-        assert_eq!(r.album_artist, "Bonobo");
-        assert_eq!(r.album_artist_mbid, "bonobo-id");
-        assert_eq!(
-            (r.album.as_str(), r.album_mbid.as_str(), r.year, r.track_no),
-            ("Fragments", "album", Some(2022), Some(1))
-        );
+        assert_eq!((r.album_artist.as_str(), r.album_artist_mbid.as_str()), ("bonobo-id", "bonobo-id"));
     }
 
     #[test]

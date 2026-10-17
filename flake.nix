@@ -16,15 +16,17 @@
     in
     {
       packages = forAll (pkgs: rec {
-        tapedeck = pkgs.callPackage ./nix/package.nix { };
+        tapedeck-unwrapped = pkgs.callPackage ./nix/package.nix { };
+        tapedeck = pkgs.callPackage ./nix/wrapper.nix { inherit tapedeck-unwrapped; };
         default = tapedeck;
       });
 
       overlays.default = final: _prev: {
-        tapedeck = final.callPackage ./nix/package.nix { };
+        tapedeck-unwrapped = final.callPackage ./nix/package.nix { };
+        tapedeck = final.callPackage ./nix/wrapper.nix { };
       };
 
-      # Home Manager: programs.tapedeck.{enable,package,settings} and services.tapedeck.enable.
+      # Home Manager: programs.tapedeck.{enable,package,ytdlpPackage,ffmpegPackage,settings} and services.tapedeck.enable.
       homeModules.default = { pkgs, lib, ... }: {
         imports = [ ./nix/home-module.nix ];
         programs.tapedeck.package = lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.default;

@@ -20,10 +20,12 @@ playlists = ["weekly-jams", "weekly-exploration"]  # also: daily-jams
 backend = "ytdlp"
 format = "opus"           # anything yt-dlp --audio-format accepts
 # ytdlp_bin = "yt-dlp"
+# ffmpeg_bin = "/usr/bin/ffmpeg"  # passed to yt-dlp as --ffmpeg-location; default: ffmpeg on PATH
 
 [sync]
 interval = "6h"           # daemon sync cadence: 30m, 6h, 1d
 targets = ["plex"]
+# playlist_title = "{name}"   # name on the targets; {name} = "Weekly Jams", {kind} = "weekly-jams"
 
 [sync.plex]
 url = "http://plex.local:32400"

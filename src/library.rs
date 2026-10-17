@@ -54,15 +54,25 @@ pub fn validate_template(template: &str) -> Result<()> {
         status: String::new(),
         source_url: None,
         error: None,
+        artist_mbid: None,
+        album_mbid: String::new(),
+        album_artist_mbid: String::new(),
+        duration_ms: None,
     };
     render_template(template, &dummy, "opus").map(drop)
 }
 
+/// Make a tag value safe as one path component, the way Lidarr does it: `Title: Sub` becomes
+/// `Title - Sub`, `R U Mine?` becomes `R U Mine`, and only truly unrepresentable characters turn into `_`.
 fn sanitize(s: &str) -> String {
     let cleaned: String = s
+        .replace(": ", " - ")
+        .replace(':', "-")
+        .replace('"', "'")
         .chars()
+        .filter(|c| !matches!(c, '?' | '*' | '<' | '>' | '|'))
         .map(|c| match c {
-            '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|' | '\0' => '_',
+            '/' | '\\' | '\0' => '_',
             c if c.is_control() => '_',
             c => c,
         })
@@ -85,6 +95,11 @@ pub fn tag(path: &Path, t: &Track) -> Result<()> {
     tag.set_album(t.album.clone());
     tag.insert_text(ItemKey::AlbumArtist, t.album_artist.clone());
     tag.insert_text(ItemKey::MusicBrainzRecordingId, t.recording_mbid.clone());
+    tag.insert_text(ItemKey::MusicBrainzReleaseId, t.album_mbid.clone());
+    tag.insert_text(ItemKey::MusicBrainzReleaseArtistId, t.album_artist_mbid.clone());
+    if let Some(id) = &t.artist_mbid {
+        tag.insert_text(ItemKey::MusicBrainzArtistId, id.clone());
+    }
     if let Some(n) = t.track_no {
         tag.set_track(n as u32);
     }
@@ -124,9 +139,16 @@ mod tests {
             status: "wanted".into(),
             source_url: None,
             error: None,
+            artist_mbid: None,
+            album_mbid: String::new(),
+            album_artist_mbid: String::new(),
+            duration_ms: None,
         };
         let p = render_template("{album_artist}/{album} ({year})/{track:02} - {title}.{ext}", &t, "opus").unwrap();
-        assert_eq!(p, PathBuf::from("AC_DC/Back in Black (1980)/03 - AC_DC_ Live_.opus"));
+        assert_eq!(p, PathBuf::from("AC_DC/Back in Black (1980)/03 - AC_DC - Live.opus"));
+        assert_eq!(sanitize("POST HUMAN: NeX GEn"), "POST HUMAN - NeX GEn");
+        assert_eq!(sanitize("R U Mine?"), "R U Mine");
+        assert_eq!(sanitize("..."), "_");
         assert!(render_template("{nope}", &t, "opus").is_err());
         assert!(validate_template("{artist}/{title}.{ext}").is_ok());
     }

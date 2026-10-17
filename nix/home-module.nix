@@ -3,12 +3,27 @@
 let
   cfg = config.programs.tapedeck;
   toml = pkgs.formats.toml { };
+  # Re-wrap with the consumer's tools. The flake's package is `nix/wrapper.nix`, whose override
+  # only rebuilds the thin wrapper; the Rust build underneath stays a cache hit.
+  package =
+    if cfg.package ? override then
+      cfg.package.override { yt-dlp = cfg.ytdlpPackage; ffmpeg-headless = cfg.ffmpegPackage; }
+    else
+      cfg.package;
 in
 {
   options.programs.tapedeck = {
     enable = lib.mkEnableOption "tapedeck, the ListenBrainz → library → Plex sync tool";
 
     package = lib.mkPackageOption pkgs "tapedeck" { };
+
+    ytdlpPackage = lib.mkPackageOption pkgs "yt-dlp" {
+      extraDescription = "Defaults to your nixpkgs' yt-dlp, so it is shared with the rest of the system.";
+    };
+
+    ffmpegPackage = lib.mkPackageOption pkgs "ffmpeg-headless" {
+      extraDescription = "Only needs the ffmpeg binary; the headless build is enough.";
+    };
 
     settings = lib.mkOption {
       type = toml.type;
@@ -37,7 +52,7 @@ in
     lib.mkEnableOption "the tapedeck daemon as a systemd user service (runs `td daemon`)";
 
   config = lib.mkIf cfg.enable {
-    home.packages = [ cfg.package ];
+    home.packages = [ package ];
 
     xdg.configFile."tapedeck/config.toml" = lib.mkIf (cfg.settings != { }) {
       source = toml.generate "tapedeck-config.toml" cfg.settings;
@@ -46,13 +61,14 @@ in
     systemd.user.services.tapedeck = lib.mkIf (config.services.tapedeck.enable && pkgs.stdenv.hostPlatform.isLinux) {
       Unit = {
         Description = "tapedeck music sync daemon";
-        After = [ "network-online.target" ];
-        Wants = [ "network-online.target" ];
+        # If sops-nix manages secrets for this user, token_file only exists after its unit ran.
+        After = [ "network-online.target" ] ++ lib.optional (config.systemd.user.services ? sops-nix) "sops-nix.service";
+        Wants = [ "network-online.target" ] ++ lib.optional (config.systemd.user.services ? sops-nix) "sops-nix.service";
         # Pick up a rewritten config without a manual restart.
         X-Restart-Triggers = lib.optional (cfg.settings != { }) config.xdg.configFile."tapedeck/config.toml".source;
       };
       Service = {
-        ExecStart = "${lib.getExe cfg.package} daemon";
+        ExecStart = "${lib.getExe package} daemon";
         Restart = "on-failure";
         RestartSec = 30;
       };

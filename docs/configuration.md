@@ -51,6 +51,7 @@ startup error.
 | `backend` | `ytdlp` | Download backend. Only `ytdlp` exists today. |
 | `format` | `opus` | Passed to `yt-dlp --audio-format`. |
 | `ytdlp_bin` | `yt-dlp` | Executable name or path. |
+| `ffmpeg_bin` | none | Passed to yt-dlp as `--ffmpeg-location`. Default: whatever yt-dlp finds on `PATH`. |
 
 yt-dlp is searched with `ytsearch1:<artist> - <title>` unless a track has an explicit
 `source_url` in the database. ffmpeg must be available for the audio extraction.
@@ -61,6 +62,7 @@ yt-dlp is searched with `ytsearch1:<artist> - <title>` unless a track has an exp
 |---|---|---|
 | `interval` | `6h` | How often the daemon runs `sync`. Suffixes: `s`, `m`, `h`, `d`. |
 | `targets` | `[]` | Enabled targets, in push order. Only `plex` exists today. |
+| `playlist_title` | `{name}` | Playlist name on the targets. `{name}` is the kind in title case (`Weekly Jams`), `{kind}` the raw kind (`weekly-jams`). Use something like `{name} (tapedeck)` if another tool already owns the plain names. |
 
 ### `[sync.plex]`
 
@@ -105,7 +107,26 @@ services.tapedeck.enable = true;   # systemd user unit running `td daemon`
 document applies. The package defaults to the flake's own build; `programs.tapedeck.package`
 overrides it.
 
+yt-dlp and ffmpeg come from *your* nixpkgs (`programs.tapedeck.ytdlpPackage`,
+`programs.tapedeck.ffmpegPackage`, defaulting to `pkgs.yt-dlp` and `pkgs.ffmpeg-headless`),
+not from the flake's pin, so they are shared with the rest of your system instead of
+duplicated. The flake publishes `tapedeck-unwrapped` (the Rust build, what the cache holds)
+and `tapedeck` (a thin wrapper that puts the two tools on `PATH`); the module re-wraps, so
+changing the tools never rebuilds the Rust part.
+
+Two things to know about the user service on a headless machine:
+
+- It only runs while that user has a session, unless the NixOS side sets
+  `users.users.<name>.linger = true`.
+- If the token comes from Home Manager's sops-nix, the unit is ordered after
+  `sops-nix.service` automatically so the secret exists when `td` starts.
+
 ## Plex sync behaviour
+
+The library (as Plex sees it, after `path_map`) has to be inside one of the folders the
+section scans, or Plex will never index the files. tapedeck checks this before pushing and
+fails with the section's folder list if it isn't; add the library as another folder of
+the section in Plex's settings.
 
 On each push tapedeck triggers a scan of the section, waits for it to finish, matches
 files by path, deletes any existing playlist with the same name and recreates it. The

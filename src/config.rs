@@ -51,6 +51,8 @@ pub struct Download {
     pub format: String,
     #[serde(default = "default_ytdlp")]
     pub ytdlp_bin: String,
+    /// Passed to yt-dlp as --ffmpeg-location. Default: whatever ffmpeg yt-dlp finds on PATH.
+    pub ffmpeg_bin: Option<String>,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -62,6 +64,9 @@ pub struct Sync {
     /// Enabled targets, in order.
     #[serde(default)]
     pub targets: Vec<String>,
+    /// Playlist name on the targets. `{name}` is "Weekly Jams", `{kind}` is "weekly-jams".
+    #[serde(default = "default_playlist_title")]
+    pub playlist_title: String,
     pub plex: Option<Plex>,
 }
 
@@ -82,7 +87,7 @@ pub struct Plex {
 // A missing [sync] table must mean the same as an empty one, so defaults live in one place.
 impl Default for Sync {
     fn default() -> Self {
-        Self { interval: default_interval(), targets: vec![], plex: None }
+        Self { interval: default_interval(), targets: vec![], playlist_title: default_playlist_title(), plex: None }
     }
 }
 
@@ -104,10 +109,13 @@ fn default_ytdlp() -> String {
 fn default_interval() -> String {
     "6h".into()
 }
+fn default_playlist_title() -> String {
+    "{name}".into()
+}
 
 impl Default for Download {
     fn default() -> Self {
-        Self { backend: default_backend(), format: default_format(), ytdlp_bin: default_ytdlp() }
+        Self { backend: default_backend(), format: default_format(), ytdlp_bin: default_ytdlp(), ffmpeg_bin: None }
     }
 }
 

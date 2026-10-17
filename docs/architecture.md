@@ -22,8 +22,9 @@ src/
 
 `td sync` does, in order:
 
-1. Fetch the user's created-for playlists from ListenBrainz and keep the kinds listed
-   in `listenbrainz.playlists`.
+1. Fetch the user's created-for playlists from ListenBrainz, keep the kinds listed in
+   `listenbrainz.playlists`, and of each kind only the newest. ListenBrainz keeps weeks of
+   history and now and then generates the same week twice.
 2. For each playlist, walk its tracks. A recording MBID we already have is reused;
    a new one is looked up on MusicBrainz and inserted as `wanted`. The playlist's
    track list is replaced in `playlist_tracks`.
@@ -31,7 +32,8 @@ src/
    `<library>/.tapedeck-tmp`, write tags from the MusicBrainz data, render the path
    template and rename the file into place. Success → `ready` with its relative path;
    failure → `failed` with the error text. `td retry` flips `failed` back to `wanted`.
-4. Write an m3u8 for each playlist fetched in this run.
+4. Write an m3u8 for each playlist fetched in this run, named `<Kind> <date>.m3u8`
+   (`Weekly Jams 2026-10-05.m3u8`); the full ListenBrainz title is inside the file.
 5. Push each of those playlists to every enabled sync target and record the result in
    `playlist_syncs`.
 
@@ -83,7 +85,8 @@ statements in `download/mod.rs` and `sync/mod.rs` are the registry.
 ```
 artists         id, mbid, name
 albums          id, mbid, artist_id, title, year
-tracks          id, recording_mbid, album_id, title, artist, track_no, path, status, source_url, error
+tracks          id, recording_mbid, album_id, title, artist, artist_mbid, track_no, duration_ms,
+                path, status, source_url, error
 playlists       id, lb_mbid, name, kind, m3u_path, fetched_at
 playlist_tracks playlist_id, track_id, position
 playlist_syncs  playlist_id, target, remote_id, synced_at
@@ -121,5 +124,15 @@ folder even when half its tracks have guests.
 **Plex playlists are recreated, not diffed.** Deleting and recreating is a handful of
 requests and has no edge cases. Playlist history lives in the m3u8 files, not in Plex.
 
-**The release picked for a recording** is the earliest official album, then EP, then
-single. This avoids filing a track under a later compilation or a deluxe reissue.
+**The release picked for a recording** is ranked: official status, then no secondary
+types (compilation, live, DJ-mix, soundtrack), then released by the track's own artist,
+then album before EP before single, then earliest date, with dates compared as
+(year, month, day) so a bare `1993` doesn't beat `1993-02-22` and an unknown date sorts
+last. Before the secondary-type and artist checks, *Creep* ended up on a Belgian
+compilation and *Nightcall* in a DJ mix.
+
+**Downloads are matched by length.** `ytsearch1:` returns whatever YouTube ranks first,
+which is often the music video with a long intro or a radio edit. tapedeck asks for five
+hits and takes the one closest to the MusicBrainz recording length; if even that is more
+than 20 seconds off it fails the track instead of filing the wrong audio, and `td source`
+lets you pin a URL by hand. The chosen URL is kept in `tracks.source_url`.

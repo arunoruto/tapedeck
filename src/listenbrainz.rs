@@ -19,6 +19,22 @@ pub struct LbPlaylist {
     pub title: String,
     /// `source_patch`, e.g. "weekly-jams". Stable across weeks, unlike the title.
     pub kind: String,
+    /// ISO 8601 creation time as ListenBrainz reports it.
+    pub date: String,
+}
+
+/// ListenBrainz keeps history (and occasionally generates a week twice); we only want the
+/// current playlist of each kind.
+pub fn newest_per_kind(playlists: Vec<LbPlaylist>) -> Vec<LbPlaylist> {
+    let mut newest: Vec<LbPlaylist> = vec![];
+    for p in playlists {
+        match newest.iter_mut().find(|n| n.kind == p.kind) {
+            Some(n) if n.date >= p.date => {}
+            Some(n) => *n = p,
+            None => newest.push(p),
+        }
+    }
+    newest
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -63,6 +79,7 @@ pub fn parse_created_for(v: &Value) -> Vec<LbPlaylist> {
             mbid: last_segment(id),
             title: p["title"].as_str().unwrap_or(id).to_string(),
             kind: kind.to_string(),
+            date: p["date"].as_str().unwrap_or("").to_string(),
         });
     }
     out
@@ -101,6 +118,7 @@ mod tests {
         let v = json!({"playlists": [{"playlist": {
             "identifier": "https://listenbrainz.org/playlist/abc-123",
             "title": "Weekly Jams for rob, week of 2026-08-24 Mon",
+            "date": "2026-08-24T00:05:00+00:00",
             "extension": {JSPF_EXT: {"additional_metadata": {"algorithm_metadata": {"source_patch": "weekly-jams"}}}}
         }}]});
         assert_eq!(
@@ -108,9 +126,27 @@ mod tests {
             vec![LbPlaylist {
                 mbid: "abc-123".into(),
                 title: "Weekly Jams for rob, week of 2026-08-24 Mon".into(),
-                kind: "weekly-jams".into()
+                kind: "weekly-jams".into(),
+                date: "2026-08-24T00:05:00+00:00".into(),
             }]
         );
+    }
+
+    #[test]
+    fn newest_per_kind_drops_history_and_duplicates() {
+        let pl = |mbid: &str, kind: &str, date: &str| LbPlaylist {
+            mbid: mbid.into(),
+            title: String::new(),
+            kind: kind.into(),
+            date: date.into(),
+        };
+        let got = newest_per_kind(vec![
+            pl("a", "weekly-jams", "2026-10-05T00:01:00+00:00"),
+            pl("b", "weekly-jams", "2026-10-05T00:03:30+00:00"),
+            pl("c", "weekly-jams", "2026-09-28T00:01:00+00:00"),
+            pl("d", "daily-jams", "2026-10-07T00:01:00+00:00"),
+        ]);
+        assert_eq!(got.iter().map(|p| p.mbid.as_str()).collect::<Vec<_>>(), ["b", "d"]);
     }
 
     #[test]
