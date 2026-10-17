@@ -12,7 +12,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style, Stylize},
     text::Line,
-    widgets::{Block, Cell, List, ListItem, ListState, Paragraph, Row, Table, TableState, Tabs},
+    widgets::{Block, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table, TableState, Tabs},
 };
 use tokio::{runtime::Handle, sync::mpsc, task::JoinHandle};
 
@@ -49,6 +49,8 @@ enum Mode {
         track: i64,
         input: String,
     },
+    /// Everything known about the selected track, as key/value rows.
+    Info(Vec<(&'static str, String)>),
     /// `y` does `then`, anything else cancels.
     Confirm {
         msg: String,
@@ -314,7 +316,11 @@ impl Tui {
                 Mode::Prompt { track, mut input } => match key.code {
                     KeyCode::Esc => self.status = "cancelled".into(),
                     KeyCode::Enter if !input.trim().is_empty() => {
-                        self.start(vec![Command::Source { track, url: input.trim().to_string() }, sync_now(true)]);
+                        let url = input.trim().to_string();
+                        self.mode = Mode::Confirm {
+                            msg: format!("Download track #{track} from {url} and replace its file?"),
+                            then: Pending::Run(vec![Command::Source { track, url }, sync_now(true)]),
+                        };
                     }
                     KeyCode::Enter => {}
                     code => {
@@ -333,6 +339,10 @@ impl Tui {
                     (KeyCode::Char('y') | KeyCode::Char('Y'), Pending::Run(cmds)) => self.start(cmds),
                     (KeyCode::Char('y') | KeyCode::Char('Y'), Pending::Quit) => return Ok(()),
                     _ => self.status = "cancelled".into(),
+                },
+                Mode::Info(rows) => match key.code {
+                    KeyCode::Esc | KeyCode::Enter | KeyCode::Char('i') | KeyCode::Char('q') => {}
+                    _ => self.mode = Mode::Info(rows),
                 },
                 Mode::Normal => {
                     if self.normal_key(key.code, ctrl, terminal)? {
@@ -355,11 +365,21 @@ impl Tui {
             KeyCode::Char('q') | KeyCode::Esc => return Ok(true),
             KeyCode::Char('c') if ctrl => return Ok(true),
             KeyCode::Char('/') => self.mode = Mode::Search,
-            KeyCode::Tab | KeyCode::Char('2') if self.tab == Tab::Library => self.set_tab(Tab::Playlists),
-            KeyCode::Tab | KeyCode::BackTab | KeyCode::Char('1') if self.tab == Tab::Playlists => {
+            KeyCode::Tab | KeyCode::Char(']') | KeyCode::Char('2') if self.tab == Tab::Library => {
+                self.set_tab(Tab::Playlists)
+            }
+            KeyCode::Tab | KeyCode::BackTab | KeyCode::Char('[') | KeyCode::Char('1') if self.tab == Tab::Playlists => {
                 self.set_tab(Tab::Library)
             }
-            KeyCode::BackTab => self.set_tab(Tab::Playlists),
+            KeyCode::BackTab | KeyCode::Char('[') => self.set_tab(Tab::Playlists),
+            // Enter on the last pane (a track) opens its details.
+            KeyCode::Enter | KeyCode::Char('i') if self.pane + 1 == self.panes() || code == KeyCode::Char('i') => {
+                if let Some(rows) = self.selected_track().map(|t| track_info(&self.config, t)) {
+                    self.mode = Mode::Info(rows);
+                } else {
+                    self.status = "no track selected".into();
+                }
+            }
             KeyCode::Left | KeyCode::Char('h') => self.pane = self.pane.saturating_sub(1),
             KeyCode::Right | KeyCode::Char('l') | KeyCode::Enter => self.pane = (self.pane + 1).min(self.panes() - 1),
             KeyCode::Char('r') => {
@@ -377,7 +397,12 @@ impl Tui {
             KeyCode::Home | KeyCode::Char('g') => self.step(i64::MIN / 2)?,
             KeyCode::End | KeyCode::Char('G') => self.step(i64::MAX / 2)?,
             // Actions. Everything that deletes or re-downloads goes through Confirm.
-            KeyCode::Char('S') => self.start(vec![sync_now(false)]),
+            KeyCode::Char('S') => {
+                self.mode = Mode::Confirm {
+                    msg: "Run a full sync now (fetch, download, push)?".into(),
+                    then: Pending::Run(vec![sync_now(false)]),
+                }
+            }
             KeyCode::Char('R') => {
                 if let Some((id, name)) = self.track_ref() {
                     self.mode = Mode::Confirm {
@@ -498,8 +523,11 @@ impl Tui {
             Mode::Search => Line::from(" type to filter · Enter keep · Esc clear · ^U wipe ".dim()),
             Mode::Prompt { input, .. } => Line::from(vec![" download URL: ".bold(), input.clone().into(), "▏".dim()]),
             Mode::Confirm { msg, .. } => Line::from(vec![format!(" {msg} ").yellow(), "[y/N]".bold()]),
+            Mode::Info(_) => Line::from(" Esc/Enter/i close ".dim()),
             Mode::Normal => Line::from(vec![
-                " Tab tabs · hjkl · ^D/^U ^F/^B g/G · / filter · r reload · ".dim(),
+                " Tab/[] tabs · hjkl · ^D/^U ^F/^B g/G · / filter · r reload · ".dim(),
+                "i".bold(),
+                " info · ".dim(),
                 "S".bold(),
                 " sync · ".dim(),
                 "R".bold(),
@@ -514,6 +542,30 @@ impl Tui {
             ]),
         };
         f.render_widget(Paragraph::new(line), help);
+        if let Mode::Info(rows) = &self.mode {
+            self.draw_info(f, rows);
+        }
+    }
+
+    /// Centered popup over everything else.
+    fn draw_info(&self, f: &mut Frame, rows: &[(&str, String)]) {
+        let key_w = rows.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
+        let lines: Vec<Line> =
+            rows.iter().map(|(k, v)| Line::from(vec![format!("{k:>key_w$}  ").bold(), v.clone().into()])).collect();
+        let area = f.area();
+        let width = area.width.saturating_sub(4).clamp(20, 110);
+        let height = (lines.len() as u16 + 2).min(area.height.saturating_sub(2));
+        let popup = Rect {
+            x: area.x + (area.width - width) / 2,
+            y: area.y + (area.height.saturating_sub(height)) / 2,
+            width,
+            height,
+        };
+        f.render_widget(Clear, popup);
+        f.render_widget(
+            Paragraph::new(lines).block(Block::bordered().title(" Track ").border_style(Style::default().cyan())),
+            popup,
+        );
     }
 
     fn draw_library(&mut self, f: &mut Frame, area: Rect) {
@@ -649,6 +701,71 @@ impl Tui {
             None => " Selected ".to_string(),
         };
         f.render_widget(Paragraph::new(lines).block(Block::bordered().title(title)), area);
+    }
+}
+
+/// Key/value rows for the info popup: tags, file properties, and the URLs where the track can
+/// be heard or checked. Reads the file's header on the spot, so the quality shown is what is
+/// on disk, not what the database remembers.
+fn track_info(cfg: &Config, t: &Track) -> Vec<(&'static str, String)> {
+    let mut rows = vec![
+        ("title", t.title.clone()),
+        ("artist", t.artist.clone()),
+        (
+            "album",
+            match t.year {
+                Some(y) => format!("{} ({y})", t.album),
+                None => t.album.clone(),
+            },
+        ),
+        ("album artist", t.album_artist.clone()),
+        ("track", t.track_no.map(|n| n.to_string()).unwrap_or_default()),
+        ("length", mmss(t.duration_ms)),
+        ("status", t.status.clone()),
+    ];
+    if let Some(e) = &t.error {
+        rows.push(("error", e.clone()));
+    }
+    if let Some(rel) = &t.path {
+        let file = cfg.library.join(rel);
+        rows.push(("file", file.display().to_string()));
+        rows.push(("on disk", file_props(&file)));
+    }
+    if let Some(u) = &t.source_url {
+        rows.push(("source", u.clone()));
+    }
+    rows.push(("play", format!("https://listenbrainz.org/player/?recording_mbids={}", t.recording_mbid)));
+    rows.push(("recording", format!("https://musicbrainz.org/recording/{}", t.recording_mbid)));
+    if !t.album_mbid.is_empty() {
+        rows.push(("release", format!("https://musicbrainz.org/release/{}", t.album_mbid)));
+    }
+    let artist = t.artist_mbid.as_deref().filter(|m| !m.is_empty()).unwrap_or(&t.album_artist_mbid);
+    if !artist.is_empty() {
+        rows.push(("artist page", format!("https://musicbrainz.org/artist/{artist}")));
+    }
+    rows.push(("id", format!("#{}", t.id)));
+    rows
+}
+
+/// "opus · 128 kbps · 48 kHz · 3:21 · 3.2 MiB", or why it could not be read.
+fn file_props(path: &std::path::Path) -> String {
+    use lofty::{config::ParseOptions, file::AudioFile, file::TaggedFileExt, probe::Probe};
+    let size = match std::fs::metadata(path) {
+        Ok(m) => format!("{:.1} MiB", m.len() as f64 / 1_048_576.0),
+        Err(e) => return format!("missing ({e})"),
+    };
+    match Probe::open(path).and_then(|p| p.options(ParseOptions::new().read_tags(false)).read()) {
+        Ok(f) => {
+            let p = f.properties();
+            let ms = p.duration().as_millis() as i64;
+            let mut parts = vec![format!("{:?}", f.file_type()).to_lowercase()];
+            parts.extend(p.audio_bitrate().map(|b| format!("{b} kbps")));
+            parts.extend(p.sample_rate().map(|r| format!("{:.1} kHz", r as f64 / 1000.0)));
+            parts.push(mmss(Some(ms)));
+            parts.push(size);
+            parts.join(" · ")
+        }
+        Err(e) => format!("{size}, unreadable: {e}"),
     }
 }
 

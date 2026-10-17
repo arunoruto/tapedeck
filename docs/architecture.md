@@ -121,7 +121,11 @@ cache it if that ever shows). *Playlists* lists local playlists with their sync 
 playlists dimmed, with the tracks of the selected one on the right. `/` filters by artist, title
 or album in both tabs; the pane below shows the selected track's id, path, source URL and error,
 plus the last lines of whatever action is running. Keys follow vim and less: `hjkl`, `^D`/`^U`
-half page, `^F`/`^B` page, `g`/`G`, `Tab` or `1`/`2` for tabs.
+half page, `^F`/`^B` page, `g`/`G`, `Tab`, `[`/`]` or `1`/`2` for tabs. `i` (or `Enter` on a
+track) opens a popup with the tags, what is on disk (format, bitrate, sample rate, length, size,
+read from the file's header on the spot, so it reflects the real download), the source URL, and
+the ListenBrainz player, MusicBrainz recording, release and artist URLs. Playback is not in the
+TUI; those links are how a track is checked for now.
 
 Actions are the CLI's own `Command`s, nothing more: `S` is `td sync`, `R` is `td retry ID`
 followed by `td sync --no-fetch`, `s` asks for a URL and runs `td source` plus the same sync,
@@ -129,7 +133,8 @@ followed by `td sync --no-fetch`, `s` asks for a URL and runs `td source` plus t
 playlist (backup first, as always). They go through `daemon::dispatch`, so with the service
 running the daemon does the work under its lock and the TUI only streams the events; without
 it the command runs in-process. One action at a time. Everything that deletes or re-downloads
-asks `[y/N]` first, and the TUI reloads from the database when the action ends. Local playlists
+asks `[y/N]` first, including `S` and the source prompt after its URL, so a stray key never
+starts a job, and the TUI reloads from the database when the action ends. Local playlists
 cannot be deleted from here: they mirror ListenBrainz and would come back on the next sync.
 
 ## Data model
