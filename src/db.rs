@@ -240,6 +240,11 @@ impl Db {
         Ok(())
     }
 
+    pub fn set_playlist_date(&self, playlist_id: i64, date: &str) -> Result<()> {
+        self.0.execute("UPDATE playlists SET date = ?2 WHERE id = ?1", params![playlist_id, date])?;
+        Ok(())
+    }
+
     pub fn clear_playlist_m3u(&self, playlist_id: i64) -> Result<()> {
         self.0.execute("UPDATE playlists SET m3u_path = NULL WHERE id = ?1", [playlist_id])?;
         Ok(())

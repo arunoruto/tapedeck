@@ -39,8 +39,11 @@ src/
    written to `archive/<kind>/<period>.m3u8` (`archive/weekly-jams/2026-w41.m3u8`, ISO week
    for weekly kinds, the date for daily ones). Playlist folders and files are lowercase slugs;
    the library's own paths follow `path_template` and the targets show `playlist_title`.
-   An older folder layout (`Playlists/`, dated or long-titled files, capitalised backups) is
-   moved into this one on the first sync, nothing deleted.
+   When ListenBrainz regenerates a week (two playlists, same period), the newer one is current
+   and the earlier edition is not archived; only a different period is history. An older folder
+   layout (`Playlists/`, dated or long-titled files, capitalised backups) is moved into this one
+   on the first sync, nothing deleted and nothing overwritten: two backups whose titles slug the
+   same keep both, the second with its remote id.
 5. Push each of those playlists to every enabled sync target and record the result in
    `playlist_syncs`.
 

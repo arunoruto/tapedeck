@@ -560,17 +560,22 @@ impl App {
         Ok(())
     }
 
-    /// Write a superseded playlist to `archive/<kind>/<period>.m3u8` and drop its old files.
-    fn archive(&self, p: &Playlist) -> Result<PathBuf> {
-        let cfg = &self.config;
-        // The title's date ("week of 2026-10-05", "2026-10-17 Sat") is what the user knows the
-        // playlist by; ListenBrainz's own date field can be the day before.
+    /// The archive stem of a playlist: ISO week or date. The title's date ("week of 2026-10-05",
+    /// "2026-10-17 Sat") is what the user knows the playlist by; ListenBrainz's own date field
+    /// can be the day before.
+    fn period_of(&self, p: &Playlist) -> String {
         let date = date_in(&p.name)
             .or_else(|| p.date.clone().filter(|d| !d.is_empty()))
             .unwrap_or_else(|| p.fetched_at.get(..10).unwrap_or("undated").to_string());
+        m3u::period(&p.kind, &date)
+    }
+
+    /// Write a superseded playlist to `archive/<kind>/<period>.m3u8` and drop its old files.
+    fn archive(&self, p: &Playlist) -> Result<PathBuf> {
+        let cfg = &self.config;
         let dir = cfg.playlist_dir().join("archive").join(&p.kind);
         let tracks = self.db().playlist_tracks(p.id)?;
-        let file = m3u::write(&dir, &cfg.library, &m3u::period(&p.kind, &date), &p.name, &tracks)?;
+        let file = m3u::write(&dir, &cfg.library, &self.period_of(p), &p.name, &tracks)?;
         self.remove_stale(p, &file);
         Ok(file)
     }
@@ -599,7 +604,7 @@ impl App {
     /// ("Daily Jams 2026-10-16.m3u8", "Daily Jams for rob, 2026-10-16 Thu.m3u8") still get
     /// archived: moved two levels down with their relative paths adjusted, or dropped when the
     /// archive already has that period.
-    fn archive_legacy(&self, kind: &str, current: &Path) -> Result<()> {
+    fn archive_legacy(&self, kind: &str, current: &Path, current_period: Option<&str>) -> Result<()> {
         let dir = self.config.playlist_dir();
         let prefix = format!("{} ", display_name(kind));
         let archive = dir.join("archive").join(kind);
@@ -613,7 +618,13 @@ impl App {
             if path == current {
                 continue;
             }
-            let target = archive.join(format!("{}.m3u8", m3u::period(kind, &date)));
+            let period = m3u::period(kind, &date);
+            if current_period == Some(period.as_str()) {
+                // Same period as the current playlist: an earlier edition, superseded, not history.
+                std::fs::remove_file(&path)?;
+                continue;
+            }
+            let target = archive.join(format!("{period}.m3u8"));
             if !target.exists() {
                 std::fs::create_dir_all(&archive)?;
                 let body: String = std::fs::read_to_string(&path)?
@@ -658,26 +669,77 @@ impl App {
         }
         if let Ok(targets) = std::fs::read_dir(dir.join("backup")) {
             for t in targets.flatten().filter(|t| t.path().is_dir()) {
-                let names: Vec<String> = std::fs::read_dir(t.path())?
+                // Rename pairs by stem, never over an existing file. "Weekly Jams" and "Weekly-Jams"
+                // both slug to weekly-jams; the second pair gets the remote id from its sidecar,
+                // like fresh backups do. Literal names: a case-insensitive filesystem would say the
+                // slug "exists" when only the differently-cased original does.
+                let mut names: HashSet<String> = std::fs::read_dir(t.path())?
                     .flatten()
                     .map(|f| f.file_name().to_string_lossy().into_owned())
                     .collect();
-                for name in &names {
-                    let Some((stem, ext)) = name.rsplit_once('.') else { continue };
-                    let slugged = format!("{}.{ext}", m3u::slug(stem));
-                    // Literal comparison again: a case-insensitive filesystem says the slug "exists".
-                    if slugged != *name && !names.contains(&slugged) {
-                        std::fs::rename(t.path().join(name), t.path().join(&slugged))?;
+                let mut stems: Vec<String> =
+                    names.iter().filter_map(|n| n.rsplit_once('.').map(|(s, _)| s.to_string())).collect();
+                stems.sort();
+                stems.dedup();
+                for stem in stems {
+                    let slug = m3u::slug(&stem);
+                    if slug == stem {
+                        continue;
+                    }
+                    let exts = ["json", "m3u8"];
+                    // Case-insensitively, since "Weekly-Jams" and "weekly-jams" are one file on
+                    // macOS; a stem's own files don't count against it (a case-only rename).
+                    let taken = |s: &str| {
+                        names.iter().any(|n| {
+                            !n.starts_with(&format!("{stem}."))
+                                && exts.iter().any(|e| n.eq_ignore_ascii_case(&format!("{s}.{e}")))
+                        })
+                    };
+                    let target = if !taken(&slug) {
+                        slug.clone()
+                    } else {
+                        let side = std::fs::read(t.path().join(format!("{stem}.json"))).ok();
+                        let id = side
+                            .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+                            .and_then(|v| v["id"].as_str().map(m3u::slug))
+                            .unwrap_or_default();
+                        let with_id = format!("{slug}-{id}");
+                        if id.is_empty() || taken(&with_id) {
+                            info(tx, format!("backup {stem:?} left as is: {slug:?} already exists")).await?;
+                            continue;
+                        }
+                        with_id
+                    };
+                    for e in exts {
+                        let from = format!("{stem}.{e}");
+                        if names.contains(&from) {
+                            std::fs::rename(t.path().join(&from), t.path().join(format!("{target}.{e}")))?;
+                            names.remove(&from);
+                            names.insert(format!("{target}.{e}"));
+                            info(tx, format!("backup renamed {from} → {target}.{e}")).await?;
+                        }
                     }
                 }
             }
         }
-        let mut kinds: Vec<String> = self.db().playlists()?.into_iter().map(|p| p.kind).collect();
+        // Rows from before the date column: take the date from the title, as the archive does.
+        // Bind first: a guard in the `for` expression would live across the loop and deadlock.
+        let playlists = self.db().playlists()?;
+        for p in playlists {
+            if p.date.as_deref().unwrap_or("").is_empty()
+                && let Some(d) = date_in(&p.name)
+            {
+                self.db().set_playlist_date(p.id, &d)?;
+            }
+        }
+        let playlists = self.db().playlists()?;
+        let mut kinds: Vec<String> = playlists.iter().map(|p| p.kind.clone()).collect();
         kinds.extend(cfg.listenbrainz.playlists.iter().cloned());
         kinds.sort();
         kinds.dedup();
         for kind in kinds {
-            self.archive_legacy(&kind, &dir.join(format!("{kind}.m3u8")))?;
+            let current = playlists.iter().find(|p| p.kind == kind).map(|p| self.period_of(p));
+            self.archive_legacy(&kind, &dir.join(format!("{kind}.m3u8")), current.as_deref())?;
         }
         Ok(())
     }
@@ -792,13 +854,20 @@ impl App {
             // `playlists()` is newest first, so the first row of a kind is the current one.
             let mut rows = playlists.iter().filter(|p| p.kind == kind);
             let Some(cur) = rows.next() else { continue };
-            for old in rows {
-                let archived = self.archive(old)?;
-                self.db().set_playlist_m3u(old.id, &archived.to_string_lossy())?;
-            }
             let tracks = self.db().playlist_tracks(cur.id)?;
             let file = m3u::write(&cfg.playlist_dir(), &cfg.library, kind, &cur.name, &tracks)?;
             self.remove_stale(cur, &file);
+            for old in rows {
+                if self.period_of(old) == self.period_of(cur) {
+                    // ListenBrainz regenerated the same week: an earlier edition, not history.
+                    // The current file already covers this period; drop the old one's files.
+                    self.remove_stale(old, &file);
+                    self.db().clear_playlist_m3u(old.id)?;
+                    continue;
+                }
+                let archived = self.archive(old)?;
+                self.db().set_playlist_m3u(old.id, &archived.to_string_lossy())?;
+            }
             self.db().set_playlist_m3u(cur.id, &file.to_string_lossy())?;
             info(tx, format!("wrote {}", file.display())).await?;
             if !no_push {
