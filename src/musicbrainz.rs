@@ -40,8 +40,11 @@ impl MusicBrainz {
             // ponytail: MusicBrainz allows 1 req/s per client; a sleep after each call keeps us polite without a rate limiter.
             tokio::time::sleep(Duration::from_secs(1)).await;
             let status = res.status();
-            if (status == 503 || status == 429) && attempt < 4 {
-                tokio::time::sleep(Duration::from_secs(2 * attempt)).await;
+            // 503 is also how MusicBrainz says "slow down"; the search endpoint does it a lot.
+            // Back off 2, 4, 8, 16, 32 s (or what Retry-After says) before giving up.
+            if (status == 503 || status == 429) && attempt < 6 {
+                let retry_after = res.headers().get("retry-after").and_then(|v| v.to_str().ok()?.parse().ok());
+                tokio::time::sleep(Duration::from_secs(retry_after.unwrap_or(1u64 << attempt).min(60))).await;
                 continue;
             }
             return Ok(res.error_for_status().with_context(|| format!("musicbrainz {what}"))?.json().await?);

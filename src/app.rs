@@ -276,7 +276,7 @@ impl App {
         let cfg = &self.config;
         let found = library::scan(dir)?;
         info(tx, format!("{} audio files under {}", found.len(), dir.display())).await?;
-        let (mut imported, mut duplicates, mut unresolved) = (0, 0, 0);
+        let (mut imported, mut duplicates, mut unresolved, mut lookup_failed) = (0, 0, 0, 0);
         for f in &found {
             let mbid = match &f.recording_mbid {
                 Some(m) => m.clone(),
@@ -289,7 +289,7 @@ impl App {
                     }
                     Err(e) => {
                         info(tx, format!("lookup failed: {}: {e:#}", f.path.display())).await?;
-                        unresolved += 1;
+                        lookup_failed += 1;
                         continue;
                     }
                 },
@@ -317,7 +317,7 @@ impl App {
                 Ok(r) => r,
                 Err(e) => {
                     info(tx, format!("lookup failed: {}: {e:#}", f.path.display())).await?;
-                    unresolved += 1;
+                    lookup_failed += 1;
                     continue;
                 }
             };
@@ -331,7 +331,11 @@ impl App {
             }
         }
         let mode = if apply { "" } else { " (dry run; pass --apply to move files)" };
-        info(tx, format!("{imported} imported, {duplicates} duplicates, {unresolved} unresolved{mode}")).await?;
+        info(tx, format!("{imported} imported, {duplicates} duplicates, {unresolved} no match, {lookup_failed} lookups failed{mode}")).await?;
+        ensure!(
+            lookup_failed == 0,
+            "{lookup_failed} MusicBrainz lookups failed; run import again later for those files"
+        );
         Ok(())
     }
 
