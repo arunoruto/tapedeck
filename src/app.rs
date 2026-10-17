@@ -83,7 +83,11 @@ impl App {
                 let counts: serde_json::Map<_, _> =
                     self.db().status_counts()?.into_iter().map(|(k, v)| (k, json!(v))).collect();
                 let playlists = self.db().playlists()?.len();
-                data(tx, json!({ "tracks": counts, "playlists": playlists })).await
+                let shared = self.db().shared_paths()?;
+                for (path, n) in &shared {
+                    info(tx, format!("warning: {n} tracks share one file: {path}")).await?;
+                }
+                data(tx, json!({ "tracks": counts, "playlists": playlists, "shared_paths": shared.len() })).await
             }
             // Bind before awaiting: the DB guard must not live across an await point.
             Command::Search { query } => {
@@ -165,7 +169,11 @@ impl App {
                 let t = self.db().track_by_id(track)?.with_context(|| format!("no track with id {track}"))?;
                 let playlists = self.db().playlists_with_track(track)?;
                 if let Some(rel) = &t.path {
-                    library::remove_track(&self.config.library, Path::new(rel))?;
+                    if self.db().tracks_with_path(rel)?.len() > 1 {
+                        info(tx, format!("another track still uses {rel}; the file stays")).await?;
+                    } else {
+                        library::remove_track(&self.config.library, Path::new(rel))?;
+                    }
                 }
                 self.db().delete_track(track)?;
                 self.rewrite_m3us(Some(&playlists))?;
@@ -291,6 +299,12 @@ impl App {
                         target.list_playlists().await?.into_iter().filter(|p| glob_match(&pattern, &p.title)).collect();
                     self.backup(target, &hits, &dir, tx).await?;
                 }
+            }
+            RemoteCmd::Relink { dir } => {
+                let dir = dir.unwrap_or_else(|| self.config.playlist_dir().join("backup"));
+                let (map, unresolved) = self.relink_map(&dir)?;
+                let n = rewrite_backups(&dir, &map)?;
+                info(tx, format!("{} paths relinked to the library in {n} backup files; {unresolved} outside paths have no library copy", map.len())).await?;
             }
             RemoteCmd::Restore { file, to } => {
                 let saved: Value = serde_json::from_slice(&std::fs::read(&file)?).context("reading backup")?;
@@ -495,6 +509,33 @@ impl App {
                     if apply {
                         // The row exists only once the file is in place: a failed move or tag
                         // must not leave a `wanted` track for the next sync to download.
+                        // Another recording may already sit at the templated path ("End of You",
+                        // two recordings on one single). Same audio: this one is its duplicate.
+                        // Different audio: file_track picks a " (2)" name.
+                        let ext = best.path.extension().and_then(|e| e.to_str()).unwrap_or("bin");
+                        let probe = Track {
+                            title: r.title.clone(),
+                            artist: r.artist.clone(),
+                            album_artist: r.album_artist.clone(),
+                            album: r.album.clone(),
+                            year: r.year,
+                            track_no: r.track_no,
+                            ..Track::default()
+                        };
+                        let planned = library::render_template(&cfg.path_template, &probe, ext)?;
+                        let at = cfg.library.join(&planned);
+                        if at.exists() && library::same_audio(&best.path, &at) {
+                            let twin = self.db().tracks_with_path(&planned.to_string_lossy())?.into_iter().next();
+                            let label = twin
+                                .map(|t| format!("{} - {} (same file)", t.artist, t.title))
+                                .unwrap_or_else(|| planned.display().to_string());
+                            for f in &files {
+                                duplicates += 1;
+                                moved.insert(f.path.clone(), at.clone());
+                                info(tx, format!("duplicate of {label}: {}", f.path.display())).await?;
+                            }
+                            continue;
+                        }
                         let had_row = existing.is_some();
                         let id = self.db().insert_track(&new_track(&mbid, &r))?;
                         let t = self.db().track_by_mbid(&mbid)?.context("track vanished")?;
@@ -522,12 +563,16 @@ impl App {
             };
             for f in files.iter().filter(|f| Some(&f.path) != kept) {
                 duplicates += 1;
+                // Backups follow every copy to the kept file, moved, copied or deleted alike:
+                // the source folder is on its way out either way.
+                if let Some(d) = &dest
+                    && apply
+                {
+                    moved.insert(f.path.clone(), d.clone());
+                }
                 if apply && delete_duplicates {
                     std::fs::remove_file(&f.path)?;
                     info(tx, format!("deleted duplicate of {label}: {}", f.path.display())).await?;
-                    if let Some(d) = &dest {
-                        moved.insert(f.path.clone(), d.clone());
-                    }
                 } else {
                     info(tx, format!("duplicate of {label}: {}", f.path.display())).await?;
                 }
@@ -558,6 +603,66 @@ impl App {
             "{lookup_failed} MusicBrainz lookups failed; run import again later for those files"
         );
         Ok(())
+    }
+
+    /// For `remote relink`: every path in the backups that is not under the library, mapped to
+    /// the library file of the same recording when the file's tag or a cached import lookup
+    /// names one. Returns the map and how many outside paths stay unresolved.
+    fn relink_map(&self, dir: &Path) -> Result<(HashMap<PathBuf, PathBuf>, usize)> {
+        let library = &self.config.library;
+        let mut outside: Vec<PathBuf> = vec![];
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            let Ok(entries) = std::fs::read_dir(&d) else { continue };
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if p.extension().is_some_and(|e| e == "m3u8") {
+                    for line in std::fs::read_to_string(&p)?.lines() {
+                        if line.starts_with('/') && !Path::new(line).starts_with(library) {
+                            outside.push(PathBuf::from(line));
+                        }
+                    }
+                }
+            }
+        }
+        outside.sort();
+        outside.dedup();
+        let all = self.db().all_tracks()?;
+        let mut map = HashMap::new();
+        let mut unresolved = 0;
+        for path in outside {
+            let found = library::inspect(&path);
+            let mbid = match &found.recording_mbid {
+                Some(m) => Some(m.clone()),
+                None => self.db().cached_lookup(&path.to_string_lossy(), found.size, found.mtime)?,
+            };
+            let by_id = mbid.and_then(|m| self.db().track_by_mbid(&m).ok().flatten());
+            // No tag and no cached lookup (a copy that import matched by name): same artist
+            // and title as a library track, same length within a few seconds.
+            let by_name = || {
+                // Credits differ in form ("Clean Bandit" vs "Clean Bandit feat. Demi Lovato"),
+                // so one artist string starting with the other is a match.
+                let (artist, title) = name_key(&found);
+                all.iter()
+                    .find(|t| {
+                        let a = crate::musicbrainz::strip_feat(&t.artist).to_lowercase();
+                        t.path.is_some()
+                            && (a.starts_with(&artist) || artist.starts_with(&a))
+                            && crate::musicbrainz::strip_feat(&t.title).to_lowercase() == title
+                            && matches!((t.duration_ms, found.duration_ms), (Some(x), Some(y)) if (x - y).abs() <= 5_000)
+                    })
+                    .cloned()
+            };
+            match by_id.or_else(by_name).and_then(|t| t.path) {
+                Some(rel) => {
+                    map.insert(path, library.join(rel));
+                }
+                None => unresolved += 1,
+            }
+        }
+        Ok((map, unresolved))
     }
 
     /// The archive stem of a playlist: ISO week or date. The title's date ("week of 2026-10-05",

@@ -120,10 +120,14 @@ moves them instead (then `--delete-duplicates` is allowed), and needs write acce
 source, which is checked before the long resolving pass. A file is tagged only once it sits in the
 library, so a failed move or copy leaves the source and the database as they were, is counted
 as failed, and the run goes on. Search results are cached per file (path, size, mtime), so the
-dry run pays for MusicBrainz once and `--apply` reuses them. Afterwards `--apply` rewrites any
+dry run pays for MusicBrainz once and `--apply` reuses them. Two different recordings can render the same path (two versions of one song on one single):
+a destination is never overwritten; if the file already there has the same length the newcomer
+is a duplicate of it, otherwise it gets " (2)" before the extension. `td status` warns if two
+rows ever end up sharing a file, and `td rm` keeps the file while another row still uses it.
+Afterwards `--apply` rewrites any
 playlist backup
-under `<playlist_dir>/backup` whose paths pointed at files that moved or were deleted, so
-`td remote restore` still finds them.
+under `<playlist_dir>/backup` whose paths pointed at files that were moved, copied or deleted (every copy of a recording
+points at the kept one), so `td remote restore` still finds them.
 
 `td push` takes a fetched playlist (id or kind) or any m3u8 file: the archive, a backup,
 something hand-written. File lines are resolved against the file's folder, lines that are not
@@ -134,6 +138,11 @@ playlist, if there is one, is backed up like `remote rm` does. `td unpush` remov
 from the targets only, backup first; nothing on disk changes. In the TUI these are `p` and `u`
 on a playlist row, and a `✓ plex` mark shows which targets currently hold a playlist under
 that title.
+
+`td remote relink` is for the end of a migration: every backup entry that points outside
+the library is resolved to a library track, by the file's MusicBrainz tag, by the cached import
+lookup, or by artist, title and length, and rewritten. After that the imported folder can go
+without any backup dangling.
 
 `td remote ls` and `td remote rm GLOB` talk to the sync targets' own playlist lists, so the
 history another tool left behind (`Weekly-Jams-2026-Week*`) can be cleared without opening

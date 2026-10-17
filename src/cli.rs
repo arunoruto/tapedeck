@@ -143,6 +143,14 @@ pub enum RemoteCmd {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Point backup entries that reference files outside the library at the library's copy of
+    /// the same recording (identified by the file's tag or a cached import lookup). Run it
+    /// before deleting an imported folder.
+    Relink {
+        /// Backup directory (default: <playlist_dir>/backup).
+        #[arg(long)]
+        dir: Option<PathBuf>,
+    },
     /// Recreate a playlist from a JSON file written by `backup`.
     Restore {
         file: PathBuf,

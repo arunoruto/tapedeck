@@ -179,6 +179,7 @@ Everything else has a default. The full reference is in
 | `td import DIR [--apply] [--move] [--delete-duplicates]` | Bring an existing folder (say, Explo's downloads) into the library; dry run by default, `--apply` copies and leaves the source alone, `--move` moves |
 | `td remote ls` / `td remote rm GLOB [--yes]` | List or bulk-delete playlists on a sync target; `rm` backs up first |
 | `td remote backup [GLOB]` / `td remote restore FILE` | Save target playlists as m3u8 + JSON, or recreate one from such a file |
+| `td remote relink` | Point backup entries that reference files outside the library at the library's copy of the same recording; run before deleting an imported folder |
 | `td daemon` | Run as a service: listen on the socket, sync every `sync.interval` |
 | `td` / `td tui` | Browse the library (artist › album › song) and playlists; `i` shows a track's tags, file quality and MusicBrainz/ListenBrainz/source URLs; sync, re-download, pin a source, push, delete, each behind a `[y/N]`. Catppuccin out of the box, your own colours via a TOML theme |
 

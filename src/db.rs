@@ -6,7 +6,7 @@ use serde::Serialize;
 
 pub struct Db(Connection);
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Clone, Debug, Default)]
 pub struct Track {
     pub id: i64,
     pub recording_mbid: String,
@@ -185,6 +185,19 @@ impl Db {
 
     pub fn track_by_id(&self, id: i64) -> Result<Option<Track>> {
         Ok(self.query_tracks(&format!("{TRACK_SELECT} WHERE t.id = ?1"), [id])?.pop())
+    }
+
+    pub fn tracks_with_path(&self, rel_path: &str) -> Result<Vec<Track>> {
+        self.query_tracks(&format!("{TRACK_SELECT} WHERE t.path = ?1 ORDER BY t.id"), [rel_path])
+    }
+
+    /// Paths that more than one row claims; should be empty.
+    pub fn shared_paths(&self) -> Result<Vec<(String, i64)>> {
+        let mut st = self
+            .0
+            .prepare("SELECT path, COUNT(*) FROM tracks WHERE path IS NOT NULL GROUP BY path HAVING COUNT(*) > 1")?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
     }
 
     pub fn playlists_with_track(&self, id: i64) -> Result<Vec<i64>> {

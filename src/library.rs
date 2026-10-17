@@ -87,6 +87,19 @@ fn sanitize(s: &str) -> String {
 
 /// Write tags from our MusicBrainz-sourced metadata, replacing whatever yt-dlp left behind.
 pub fn tag(path: &Path, t: &Track) -> Result<()> {
+    // lofty's generic tag never sees TXXX frames it has no key for (Explo's
+    // "MusicBrainz_TrackId", "MusicBrainz_AlbumId"), so `clear()` below would leave them next
+    // to ours with stale values. Drop every TXXX frame from the raw ID3v2 tag first; the ones
+    // that matter are written again from `t` a moment later.
+    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("mp3"))
+        && let Ok(mut fh) = std::fs::OpenOptions::new().read(true).write(true).open(path)
+        && let Ok(mut mp3) = MpegFile::read_from(&mut fh, ParseOptions::new().read_properties(false))
+        && let Some(id3) = mp3.id3v2_mut()
+    {
+        id3.remove(&lofty::id3::v2::FrameId::Valid(std::borrow::Cow::Borrowed("TXXX"))).for_each(drop);
+        mp3.save_to(&mut fh, WriteOptions::default())
+            .with_context(|| format!("rewriting tags of {}", path.display()))?;
+    }
     let mut file = Probe::open(path)?.read().with_context(|| format!("reading tags of {}", path.display()))?;
     if file.primary_tag().is_none() {
         let ty = file.primary_tag_type();
@@ -118,7 +131,7 @@ pub fn tag(path: &Path, t: &Track) -> Result<()> {
 /// the path relative to `library`.
 pub fn file_track(library: &Path, template: &str, t: &Track, src: &Path, copy: bool) -> Result<PathBuf> {
     let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("bin");
-    let rel = render_template(template, t, ext)?;
+    let rel = unique(library, &render_template(template, t, ext)?);
     let dest = library.join(&rel);
     std::fs::create_dir_all(dest.parent().context("template has no directory part")?)?;
     if copy {
@@ -140,6 +153,34 @@ pub fn file_track(library: &Path, template: &str, t: &Track, src: &Path, copy: b
         return Err(e);
     }
     Ok(rel)
+}
+
+/// Never overwrite: two recordings can render the same path ("End of You" twice on one
+/// single). The second gets " (2)", " (3)", … before the extension.
+pub fn unique(library: &Path, rel: &Path) -> PathBuf {
+    if !library.join(rel).exists() {
+        return rel.to_path_buf();
+    }
+    let stem = rel.file_stem().and_then(|s| s.to_str()).unwrap_or("track");
+    let ext = rel.extension().and_then(|e| e.to_str()).map(|e| format!(".{e}")).unwrap_or_default();
+    (2..)
+        .map(|n| rel.with_file_name(format!("{stem} ({n}){ext}")))
+        .find(|p| !library.join(p).exists())
+        .expect("an unused name exists")
+}
+
+/// Do two files hold the same audio, as far as length tells (within a second)?
+pub fn same_audio(a: &Path, b: &Path) -> bool {
+    let len = |p: &Path| {
+        Probe::open(p)
+            .and_then(|p| p.options(ParseOptions::new().read_tags(false)).read())
+            .ok()
+            .map(|f| f.properties().duration())
+    };
+    match (len(a), len(b)) {
+        (Some(x), Some(y)) => x.abs_diff(y) <= std::time::Duration::from_secs(1),
+        _ => false,
+    }
 }
 
 /// Can this file be modified and renamed by us? Opening for append is the cheap test that
@@ -224,7 +265,7 @@ pub fn scan(dir: &Path) -> Result<Vec<Found>> {
     Ok(out)
 }
 
-fn inspect(path: &Path) -> Found {
+pub fn inspect(path: &Path) -> Found {
     let (mut artist, mut title) = parse_stem(path.file_stem().and_then(|s| s.to_str()).unwrap_or(""));
     let mut recording_mbid = None;
     let mut duration_ms = None;
@@ -341,6 +382,13 @@ mod tests {
             Some("5dcf0f17-d13b-47c1-8386-fea1f5e25875".into())
         );
         assert_eq!(find_uuid("5dcf0f17"), None);
+        let dir = std::env::temp_dir().join(format!("td-unique-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("A")).unwrap();
+        std::fs::write(dir.join("A/01 - X.opus"), b"").unwrap();
+        std::fs::write(dir.join("A/01 - X (2).opus"), b"").unwrap();
+        assert_eq!(unique(&dir, Path::new("A/01 - X.opus")), PathBuf::from("A/01 - X (3).opus"));
+        assert_eq!(unique(&dir, Path::new("A/02 - Y.opus")), PathBuf::from("A/02 - Y.opus"));
+        let _ = std::fs::remove_dir_all(&dir);
         assert!(render_template("{nope}", &t, "opus").is_err());
         assert!(validate_template("{artist}/{title}.{ext}").is_ok());
     }
