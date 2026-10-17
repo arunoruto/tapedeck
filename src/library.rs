@@ -113,15 +113,39 @@ pub fn tag(path: &Path, t: &Track) -> Result<()> {
     tag.save_to_path(path, WriteOptions::default()).with_context(|| format!("writing tags to {}", path.display()))
 }
 
-/// Tag a downloaded file and move it to its templated place. Returns the path relative to `library`.
-pub fn file_track(library: &Path, template: &str, t: &Track, downloaded: &Path) -> Result<PathBuf> {
-    tag(downloaded, t)?;
-    let ext = downloaded.extension().and_then(|e| e.to_str()).unwrap_or("bin");
+/// Put a file at its templated place (moved, or copied with `copy`) and tag it there. The
+/// source is only ever read when copying, and never modified before the move succeeds. Returns
+/// the path relative to `library`.
+pub fn file_track(library: &Path, template: &str, t: &Track, src: &Path, copy: bool) -> Result<PathBuf> {
+    let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("bin");
     let rel = render_template(template, t, ext)?;
     let dest = library.join(&rel);
     std::fs::create_dir_all(dest.parent().context("template has no directory part")?)?;
-    move_file(downloaded, &dest)?;
+    if copy {
+        std::fs::copy(src, &dest).with_context(|| format!("copying {} → {}", src.display(), dest.display()))?;
+        // `copy` keeps the source's mode; a read-only source would make the copy untaggable.
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o644))?;
+    } else {
+        move_file(src, &dest)?;
+    }
+    if let Err(e) = tag(&dest, t) {
+        // Leave things as they were: the copy goes, a moved file goes back.
+        if copy {
+            let _ = std::fs::remove_file(&dest);
+        } else {
+            let _ = move_file(&dest, src);
+        }
+        prune(library, dest.parent());
+        return Err(e);
+    }
     Ok(rel)
+}
+
+/// Can this file be modified and renamed by us? Opening for append is the cheap test that
+/// matches what tagging and moving need.
+pub fn writable(path: &Path) -> bool {
+    std::fs::OpenOptions::new().append(true).open(path).is_ok()
 }
 
 /// Move a track already in the library to a new relative path and drop directories left empty.
@@ -169,6 +193,9 @@ fn move_file(from: &Path, to: &Path) -> Result<()> {
 #[derive(Debug, Clone)]
 pub struct Found {
     pub path: PathBuf,
+    pub size: i64,
+    /// Seconds since the epoch; with `size` it tells whether a cached lookup still applies.
+    pub mtime: i64,
     pub artist: String,
     pub title: String,
     pub recording_mbid: Option<String>,
@@ -241,7 +268,14 @@ fn inspect(path: &Path) -> Found {
                 })
             });
     }
-    Found { path: path.to_path_buf(), artist, title, recording_mbid, duration_ms }
+    let meta = std::fs::metadata(path).ok();
+    let size = meta.as_ref().map(|m| m.len() as i64).unwrap_or(0);
+    let mtime = meta
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    Found { path: path.to_path_buf(), size, mtime, artist, title, recording_mbid, duration_ms }
 }
 
 fn is_recording_id_key(key: &str) -> bool {

@@ -110,7 +110,14 @@ song into every weekly folder it appears in. A recording the library already has
 every copy a duplicate; otherwise the copy closest to the recording's length is filed exactly
 like a download would be and the rest are duplicates. Duplicates are reported, or deleted with
 `--apply --delete-duplicates`. The default is a dry run, which reports the same groups
-`--apply` would act on; `--apply` moves files, and afterwards rewrites any playlist backup
+`--apply` would act on; `--apply` moves files, or copies them with `--copy` when the source
+belongs to another user or should stay as it is (then nothing there is ever modified or
+deleted, and `--delete-duplicates` is refused). Without `--copy` the source must be writable,
+which is checked before the long resolving pass. A file is tagged only once it sits in the
+library, so a failed move or copy leaves the source and the database as they were, is counted
+as failed, and the run goes on. Search results are cached per file (path, size, mtime), so the
+dry run pays for MusicBrainz once and `--apply` reuses them. Afterwards `--apply` rewrites any
+playlist backup
 under `<playlist_dir>/backup` whose paths pointed at files that moved or were deleted, so
 `td remote restore` still finds them.
 

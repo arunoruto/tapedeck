@@ -54,3 +54,12 @@ CREATE TABLE IF NOT EXISTS playlist_syncs (
     synced_at   TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     PRIMARY KEY (playlist_id, target)
 );
+
+-- Search results of `td import`, so a re-run (dry run, then --apply) does not query
+-- MusicBrainz again for the same unchanged file. Tagged files never need this.
+CREATE TABLE IF NOT EXISTS import_lookups (
+    path           TEXT PRIMARY KEY,
+    size           INTEGER NOT NULL,
+    mtime          INTEGER NOT NULL,
+    recording_mbid TEXT NOT NULL
+);

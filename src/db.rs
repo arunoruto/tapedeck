@@ -294,6 +294,26 @@ impl Db {
         })
     }
 
+    pub fn cached_lookup(&self, path: &str, size: i64, mtime: i64) -> Result<Option<String>> {
+        Ok(self
+            .0
+            .query_row(
+                "SELECT recording_mbid FROM import_lookups WHERE path = ?1 AND size = ?2 AND mtime = ?3",
+                params![path, size, mtime],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    pub fn cache_lookup(&self, path: &str, size: i64, mtime: i64, mbid: &str) -> Result<()> {
+        self.0.execute(
+            "INSERT INTO import_lookups (path, size, mtime, recording_mbid) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(path) DO UPDATE SET size = excluded.size, mtime = excluded.mtime, recording_mbid = excluded.recording_mbid",
+            params![path, size, mtime, mbid],
+        )?;
+        Ok(())
+    }
+
     pub fn clear_sync(&self, playlist_id: i64, target: &str) -> Result<()> {
         self.0.execute(
             "DELETE FROM playlist_syncs WHERE playlist_id = ?1 AND target = ?2",

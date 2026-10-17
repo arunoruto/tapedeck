@@ -177,7 +177,9 @@ impl App {
             }
             Command::Refile { dry_run } => self.refile(dry_run, tx).await,
             Command::Remote { action } => self.remote(action, tx).await,
-            Command::Import { dir, apply, delete_duplicates } => self.import(&dir, apply, delete_duplicates, tx).await,
+            Command::Import { dir, apply, copy, delete_duplicates } => {
+                self.import(&dir, apply, copy, delete_duplicates, tx).await
+            }
         }
     }
 
@@ -352,7 +354,14 @@ impl App {
 
     /// Resolve files from elsewhere to recordings; file one copy of each new recording, report
     /// (or delete) the rest. Backups under `<playlist_dir>/backup` follow the files that moved.
-    async fn import(&self, dir: &Path, apply: bool, delete_duplicates: bool, tx: &Sender<Event>) -> Result<()> {
+    async fn import(
+        &self,
+        dir: &Path,
+        apply: bool,
+        copy: bool,
+        delete_duplicates: bool,
+        tx: &Sender<Event>,
+    ) -> Result<()> {
         let cfg = &self.config;
         if apply {
             // The backups this run may rewrite live under the playlist folder.
@@ -360,6 +369,16 @@ impl App {
         }
         let found = library::scan(dir)?;
         info(tx, format!("{} audio files under {}", found.len(), dir.display())).await?;
+        if apply && !copy {
+            // Moving and tagging need write access to the source; find out before the long pass.
+            let unwritable = found.iter().filter(|f| !library::writable(&f.path)).count();
+            ensure!(
+                unwritable == 0,
+                "source not writable: {unwritable} of {} files (owned by another user?); use --copy",
+                found.len()
+            );
+        }
+        let verb = if copy { "copied" } else { "imported" };
         let (mut unresolved, mut lookup_failed) = (0, 0);
 
         // Pass 1: every file to a recording MBID, grouped in first-seen order. Explo drops the
@@ -380,14 +399,24 @@ impl App {
                 ),
             )
             .await?;
-            let mbid = match &f.recording_mbid {
-                Some(m) => {
+            let path_s = f.path.to_string_lossy().into_owned();
+            let cached = match &f.recording_mbid {
+                Some(_) => None,
+                None => self.db().cached_lookup(&path_s, f.size, f.mtime)?,
+            };
+            let mbid = match (&f.recording_mbid, cached) {
+                (Some(m), _) => {
                     by_tag += 1;
                     m.clone()
                 }
-                None => match self.mb.search_recording(&f.artist, &f.title, f.duration_ms).await {
+                (None, Some(m)) => {
+                    by_search += 1;
+                    m
+                }
+                (None, None) => match self.mb.search_recording(&f.artist, &f.title, f.duration_ms).await {
                     Ok(Some(m)) => {
                         by_search += 1;
+                        self.db().cache_lookup(&path_s, f.size, f.mtime, &m)?;
                         m
                     }
                     Ok(None) => {
@@ -436,7 +465,7 @@ impl App {
 
         // Pass 2: per recording, the library's copy wins; else the file closest to the
         // recording's length is filed and the others are duplicates.
-        let (mut imported, mut duplicates) = (0, 0);
+        let (mut imported, mut duplicates, mut failed) = (0, 0, 0);
         let mut moved: HashMap<PathBuf, PathBuf> = HashMap::new();
         for (mbid, files) in groups {
             let existing = self.db().track_by_mbid(&mbid)?;
@@ -460,19 +489,34 @@ impl App {
                         _ => i64::MAX,
                     };
                     let best = *files.iter().min_by_key(drift).expect("group has a file");
-                    info(tx, format!("import {} → {} - {} [{}]", best.path.display(), r.artist, r.title, r.album))
+                    info(tx, format!("{verb}: {} → {} - {} [{}]", best.path.display(), r.artist, r.title, r.album))
                         .await?;
-                    imported += 1;
                     let mut dest = None;
                     if apply {
+                        // The row exists only once the file is in place: a failed move or tag
+                        // must not leave a `wanted` track for the next sync to download.
+                        let had_row = existing.is_some();
                         let id = self.db().insert_track(&new_track(&mbid, &r))?;
                         let t = self.db().track_by_mbid(&mbid)?.context("track vanished")?;
-                        let rel = library::file_track(&cfg.library, &cfg.path_template, &t, &best.path)?;
-                        self.db().mark_ready(id, &rel.to_string_lossy(), None)?;
-                        let d = cfg.library.join(rel);
-                        moved.insert(best.path.clone(), d.clone());
-                        dest = Some(d);
+                        match library::file_track(&cfg.library, &cfg.path_template, &t, &best.path, copy) {
+                            Ok(rel) => {
+                                self.db().mark_ready(id, &rel.to_string_lossy(), None)?;
+                                let d = cfg.library.join(rel);
+                                moved.insert(best.path.clone(), d.clone());
+                                dest = Some(d);
+                            }
+                            Err(e) => {
+                                if !had_row {
+                                    self.db().delete_track(id)?;
+                                }
+                                info(tx, format!("failed: {}: {e:#}", best.path.display())).await?;
+                                failed += 1;
+                                // Its copies stay where they are too; nothing landed.
+                                continue;
+                            }
+                        }
                     }
+                    imported += 1;
                     (Some(&best.path), format!("{} - {}", r.artist, r.title), dest)
                 }
             };
@@ -495,8 +539,20 @@ impl App {
                 info(tx, format!("updated {n} backup files to point at the moved tracks")).await?;
             }
         }
-        let mode = if apply { "" } else { " (dry run; pass --apply to move files)" };
-        info(tx, format!("{imported} imported, {duplicates} duplicates, {unresolved} no match, {lookup_failed} lookups failed{mode}")).await?;
+        let mode = match (apply, copy) {
+            (true, _) => "",
+            (false, true) => " (dry run; pass --apply to copy files)",
+            (false, false) => " (dry run; pass --apply to move files)",
+        };
+        info(
+            tx,
+            format!(
+                "{imported} {verb}, {duplicates} duplicates, {unresolved} no match, {lookup_failed} lookups failed{}{mode}",
+                if failed > 0 { format!(", {failed} failed") } else { String::new() }
+            ),
+        )
+        .await?;
+        ensure!(failed == 0, "{failed} files could not be {verb}; see the lines above");
         ensure!(
             lookup_failed == 0,
             "{lookup_failed} MusicBrainz lookups failed; run import again later for those files"
@@ -701,7 +757,7 @@ impl App {
             info(tx, format!("downloading {} - {}", t.artist, t.title)).await?;
             let result = async {
                 let got = self.downloader.download(t, &cfg.tmp_dir()).await?;
-                let rel = library::file_track(&cfg.library, &cfg.path_template, t, &got.path)?;
+                let rel = library::file_track(&cfg.library, &cfg.path_template, t, &got.path, false)?;
                 Ok::<_, anyhow::Error>((rel, got.source_url))
             }
             .await;

@@ -93,8 +93,12 @@ pub enum Command {
         dir: PathBuf,
         #[arg(long)]
         apply: bool,
-        /// Delete files whose recording is already in the library (with --apply).
+        /// Copy files into the library instead of moving them; the source is never touched.
         #[arg(long)]
+        #[serde(default)]
+        copy: bool,
+        /// Delete files whose recording is already in the library (with --apply; not with --copy).
+        #[arg(long, conflicts_with = "copy")]
         delete_duplicates: bool,
     },
 }
