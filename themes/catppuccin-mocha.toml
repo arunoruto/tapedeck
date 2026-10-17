@@ -1,0 +1,17 @@
+# tapedeck theme: Catppuccin Mocha (built in; copy this file to
+# ~/.config/tapedeck/themes/<name>.toml and set `theme = "<name>"` to make your own).
+# Colours are "#rrggbb", or terminal names like "blue", "lightred", "gray".
+name = "Catppuccin Mocha"
+
+text = "#cdd6f4"          # normal text
+muted = "#6c7086"         # help line, secondary text, remote playlists
+accent = "#89b4fa"        # focused pane border, active tab, key hints
+border = "#45475a"        # unfocused pane borders
+title = "#b4befe"         # pane titles
+selection_bg = "#313244"  # highlighted row
+selection_fg = "#f5e0dc"
+ready = "#a6e3a1"         # status colours
+failed = "#f38ba8"
+wanted = "#f9e2af"
+warning = "#fab387"       # confirmations, status messages
+stripes = ["#f38ba8", "#fab387", "#f9e2af"]   # the cassette stripes, three colours

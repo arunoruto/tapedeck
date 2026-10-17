@@ -7,6 +7,7 @@ library = "/srv/music"
 path_template = "{album_artist}/{album} ({year})/{track:02} - {title}.{ext}"
 
 # playlist_dir = "/srv/music/playlists"            # m3u8 files; default <library>/playlists
+# theme = "catppuccin-mocha"                        # TUI colours: catppuccin-mocha, catppuccin-latte, or themes/<name>.toml next to this file
 # database     = "~/.local/share/tapedeck/tapedeck.db"
 # socket       = "$XDG_RUNTIME_DIR/tapedeck.sock"
 

@@ -10,9 +10,11 @@ use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
-    style::{Modifier, Style, Stylize},
-    text::Line,
-    widgets::{Block, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table, TableState, Tabs},
+    style::Style,
+    text::{Line, Span},
+    widgets::{
+        Block, BorderType, Cell, Clear, List, ListItem, ListState, Padding, Paragraph, Row, Table, TableState, Tabs,
+    },
 };
 use tokio::{runtime::Handle, sync::mpsc, task::JoinHandle};
 
@@ -25,6 +27,7 @@ use crate::{
     db::{Db, Playlist, Track},
     render,
     sync::{self, RemotePlaylist},
+    theme::Theme,
 };
 
 #[derive(PartialEq, Clone, Copy)]
@@ -74,6 +77,7 @@ enum Pending {
 
 struct Tui {
     config: Config,
+    theme: Theme,
     rt: Handle,
     db: Db,
     tab: Tab,
@@ -117,8 +121,10 @@ pub async fn run(config: Config) -> Result<()> {
             Err(e) => tracing::warn!("{}: {e:#}", target.name()),
         }
     }
+    let theme = Theme::load(&config.themes_dir(), &config.theme)?;
     let mut tui = Tui {
         config,
+        theme,
         rt: Handle::current(),
         db,
         tab: Tab::Library,
@@ -551,15 +557,13 @@ impl Tui {
     }
 
     fn draw(&mut self, f: &mut Frame) {
-        let [tabs, body, detail, help] =
-            Layout::vertical([Constraint::Length(1), Constraint::Min(5), Constraint::Length(5), Constraint::Length(1)])
+        let th = self.theme.clone();
+        // Theme text colour everywhere; the terminal's own background stays.
+        f.render_widget(Block::new().style(Style::new().fg(th.text)), f.area());
+        let [header, body, detail, help] =
+            Layout::vertical([Constraint::Length(4), Constraint::Min(5), Constraint::Length(5), Constraint::Length(1)])
                 .areas(f.area());
-        let filter = if self.query.is_empty() { String::new() } else { format!("  /{}", self.query) };
-        f.render_widget(
-            Tabs::new(TABS).select(self.tab as usize).highlight_style(Style::default().bold().cyan()).divider("│"),
-            tabs,
-        );
-        f.render_widget(Paragraph::new(filter.yellow()).right_aligned(), tabs);
+        self.draw_header(f, header);
         match self.tab {
             Tab::Library => self.draw_library(f, body),
             Tab::Playlists => {
@@ -570,29 +574,57 @@ impl Tui {
             }
         }
         self.draw_detail(f, detail);
+        let key = |k: &str| Span::styled(k.to_string(), Style::new().fg(th.accent).bold());
+        let dim = |t: &str| Span::styled(t.to_string(), Style::new().fg(th.muted));
         let line = match &self.mode {
-            Mode::Search => Line::from(" type to filter · Enter keep · Esc clear · ^U wipe ".dim()),
-            Mode::Prompt { input, .. } => Line::from(vec![" download URL: ".bold(), input.clone().into(), "▏".dim()]),
-            Mode::Confirm { msg, .. } => Line::from(vec![format!(" {msg} ").yellow(), "[y/N]".bold()]),
-            Mode::Info(_) => Line::from(" Esc/Enter/i close ".dim()),
-            Mode::Normal => Line::from(vec![
-                " Tab/[] tabs · hjkl · ^D/^U ^F/^B g/G · / filter · r reload · ".dim(),
-                "i".bold(),
-                " info · ".dim(),
-                "S".bold(),
-                " sync · ".dim(),
-                "R".bold(),
-                " re-download · ".dim(),
-                "s".bold(),
-                " source · ".dim(),
-                "p".bold(),
-                " push · ".dim(),
-                "u".bold(),
-                " unpush · ".dim(),
-                "d".bold(),
-                " delete · q quit ".dim(),
-                self.status.clone().yellow(),
+            Mode::Search => Line::from(vec![
+                dim(" type to filter · "),
+                key("Enter"),
+                dim(" keep · "),
+                key("Esc"),
+                dim(" clear · "),
+                key("^U"),
+                dim(" wipe "),
             ]),
+            Mode::Prompt { input, .. } => Line::from(vec![
+                Span::styled(" download URL: ", Style::new().fg(th.accent).bold()),
+                input.clone().into(),
+                Span::styled("▏", Style::new().fg(th.muted)),
+            ]),
+            Mode::Confirm { msg, .. } => {
+                Line::from(vec![Span::styled(format!(" {msg} "), Style::new().fg(th.warning).bold()), key("[y/N]")])
+            }
+            Mode::Info(_) => {
+                Line::from(vec![dim(" "), key("Esc"), dim("/"), key("Enter"), dim("/"), key("i"), dim(" close ")])
+            }
+            Mode::Normal => {
+                let mut spans = vec![dim(" ")];
+                for (i, (k, what)) in [
+                    ("Tab/[]", "tabs"),
+                    ("hjkl", "move"),
+                    ("^D/^U", "half page"),
+                    ("/", "filter"),
+                    ("i", "info"),
+                    ("S", "sync"),
+                    ("R", "re-download"),
+                    ("s", "source"),
+                    ("p", "push"),
+                    ("u", "unpush"),
+                    ("d", "delete"),
+                    ("q", "quit"),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    if i > 0 {
+                        spans.push(dim(" · "));
+                    }
+                    spans.push(key(k));
+                    spans.push(dim(&format!(" {what}")));
+                }
+                spans.push(Span::styled(format!("  {}", self.status), Style::new().fg(th.warning)));
+                Line::from(spans)
+            }
         };
         f.render_widget(Paragraph::new(line), help);
         if let Mode::Info(rows) = &self.mode {
@@ -600,11 +632,75 @@ impl Tui {
         }
     }
 
+    /// A small cassette with the theme's stripes, the name, the tabs and the library's size.
+    fn draw_header(&self, f: &mut Frame, area: Rect) {
+        let th = &self.theme;
+        let [logo, right] = Layout::horizontal([Constraint::Length(13), Constraint::Min(10)]).areas(area);
+        let frame = Style::new().fg(th.border);
+        let mut stripes = vec![Span::styled("│ ", frame)];
+        let blocks = 8;
+        for i in 0..blocks {
+            let colour = th.stripes[i * th.stripes.len() / blocks];
+            stripes.push(Span::styled("▆", Style::new().fg(colour)));
+        }
+        stripes.push(Span::styled(" │", frame));
+        let cassette = vec![
+            Line::from(Span::styled("╭──────────╮", frame)),
+            Line::from(stripes),
+            Line::from(vec![
+                Span::styled("│ ", frame),
+                Span::styled("◉", Style::new().fg(th.accent)),
+                Span::styled("──────", Style::new().fg(th.muted)),
+                Span::styled("◉", Style::new().fg(th.accent)),
+                Span::styled(" │", frame),
+            ]),
+            Line::from(Span::styled("╰──────────╯", frame)),
+        ];
+        f.render_widget(Paragraph::new(cassette), logo);
+
+        let [name, tabs, counts, filter] = Layout::vertical([Constraint::Length(1); 4]).areas(right);
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled("tapedeck", Style::new().fg(th.accent).bold()),
+                Span::styled(format!("  {}", th.name), Style::new().fg(th.muted)),
+            ])),
+            name,
+        );
+        f.render_widget(
+            Tabs::new(TABS)
+                .select(self.tab as usize)
+                .style(Style::new().fg(th.muted))
+                .highlight_style(Style::new().fg(th.accent).bold())
+                .divider(Span::styled("│", Style::new().fg(th.border))),
+            tabs,
+        );
+        let artists = shelf(&self.all, "", 0, 0).artists.len();
+        let locals = self.entries.iter().filter(|e| matches!(e, Entry::Local { .. })).count();
+        let remotes = self.entries.len() - locals;
+        let summary =
+            format!("{artists} artists · {} tracks · {locals} playlists · {remotes} on targets", self.all.len());
+        f.render_widget(Paragraph::new(Span::styled(summary, Style::new().fg(th.muted))), counts);
+        if !self.query.is_empty() {
+            f.render_widget(
+                Paragraph::new(Span::styled(format!("filter: {}", self.query), Style::new().fg(th.warning))),
+                filter,
+            );
+        }
+    }
+
     /// Centered popup over everything else.
     fn draw_info(&self, f: &mut Frame, rows: &[(&str, String)]) {
+        let th = &self.theme;
         let key_w = rows.iter().map(|(k, _)| k.len()).max().unwrap_or(0);
-        let lines: Vec<Line> =
-            rows.iter().map(|(k, v)| Line::from(vec![format!("{k:>key_w$}  ").bold(), v.clone().into()])).collect();
+        let lines: Vec<Line> = rows
+            .iter()
+            .map(|(k, v)| {
+                Line::from(vec![
+                    Span::styled(format!("{k:>key_w$}  "), Style::new().fg(th.title).bold()),
+                    v.clone().into(),
+                ])
+            })
+            .collect();
         let area = f.area();
         let width = area.width.saturating_sub(4).clamp(20, 110);
         let height = (lines.len() as u16 + 2).min(area.height.saturating_sub(2));
@@ -615,23 +711,26 @@ impl Tui {
             height,
         };
         f.render_widget(Clear, popup);
-        f.render_widget(
-            Paragraph::new(lines).block(Block::bordered().title(" Track ").border_style(Style::default().cyan())),
-            popup,
-        );
+        f.render_widget(Paragraph::new(lines).block(self.pane(" Track ", true)), popup);
     }
 
     fn draw_library(&mut self, f: &mut Frame, area: Rect) {
+        let th = self.theme.clone();
         let shelf =
             shelf(&self.all, &self.query, self.artists.selected().unwrap_or(0), self.albums.selected().unwrap_or(0));
         let [a, b, c] =
             Layout::horizontal([Constraint::Percentage(25), Constraint::Percentage(30), Constraint::Percentage(45)])
                 .areas(area);
-        let highlight = Style::default().add_modifier(Modifier::REVERSED);
+        let highlight = Style::new().bg(th.selection_bg).fg(th.selection_fg).bold();
+        let count = |n: usize| Span::styled(format!(" {n}"), Style::new().fg(th.muted));
 
-        let items: Vec<ListItem> = shelf.artists.iter().map(|(n, c)| ListItem::new(format!("{n} ({c})"))).collect();
+        let items: Vec<ListItem> = shelf
+            .artists
+            .iter()
+            .map(|(n, c)| ListItem::new(Line::from(vec![n.to_string().into(), count(*c)])))
+            .collect();
         let title = format!(" Artists ({}) ", shelf.artists.len());
-        let list = List::new(items).block(pane_block(&title, self.pane == 0)).highlight_style(highlight);
+        let list = List::new(items).block(self.pane(&title, self.pane == 0)).highlight_style(highlight);
         f.render_stateful_widget(list, a, &mut self.artists);
 
         let items: Vec<ListItem> = shelf
@@ -639,10 +738,14 @@ impl Tui {
             .iter()
             .map(|(name, year, n)| {
                 let year = year.map(|y| format!(" · {y}")).unwrap_or_default();
-                ListItem::new(format!("{name}{year} ({n})"))
+                ListItem::new(Line::from(vec![
+                    name.to_string().into(),
+                    Span::styled(year, Style::new().fg(th.muted)),
+                    count(*n),
+                ]))
             })
             .collect();
-        let list = List::new(items).block(pane_block(" Albums ", self.pane == 1)).highlight_style(highlight);
+        let list = List::new(items).block(self.pane(" Albums ", self.pane == 1)).highlight_style(highlight);
         f.render_stateful_widget(list, b, &mut self.albums);
 
         let rows: Vec<Row> = shelf
@@ -650,54 +753,68 @@ impl Tui {
             .iter()
             .map(|t| {
                 Row::new(vec![
-                    Cell::from(t.track_no.map(|n| n.to_string()).unwrap_or_default()),
-                    status_cell(&t.status),
+                    Cell::from(Span::styled(
+                        t.track_no.map(|n| n.to_string()).unwrap_or_default(),
+                        Style::new().fg(th.muted),
+                    )),
+                    self.badge(&t.status),
                     Cell::from(t.title.clone()),
-                    Cell::from(mmss(t.duration_ms)),
+                    Cell::from(Span::styled(mmss(t.duration_ms), Style::new().fg(th.muted))),
                 ])
             })
             .collect();
         let table = Table::new(
             rows,
-            [Constraint::Length(3), Constraint::Length(6), Constraint::Min(10), Constraint::Length(5)],
+            [Constraint::Length(3), Constraint::Length(8), Constraint::Min(10), Constraint::Length(5)],
         )
-        .header(Row::new(["#", "STATUS", "TITLE", "LEN"]).bold())
-        .block(pane_block(" Songs ", self.pane == 2))
+        .header(self.header(["#", "STATUS", "TITLE", "LEN"]))
+        .block(self.pane(" Songs ", self.pane == 2))
         .row_highlight_style(highlight);
         f.render_stateful_widget(table, c, &mut self.songs);
     }
 
     fn draw_playlists(&mut self, f: &mut Frame, area: Rect) {
+        let th = self.theme.clone();
         let items: Vec<ListItem> = self
             .entries
             .iter()
             .map(|e| match e {
                 Entry::Local { playlist: p, title, on } => {
-                    let mark = if on.is_empty() { String::new() } else { format!("  ✓ {}", on.join(",")) };
-                    let label = if *title == p.name { title.clone() } else { format!("{title}: {}", p.name) };
-                    ListItem::new(format!("{label} ({}){mark}", p.track_count))
+                    let mut spans = vec![Span::raw(title.clone())];
+                    if *title != p.name {
+                        spans.push(Span::styled(format!(": {}", p.name), Style::new().fg(th.muted)));
+                    }
+                    spans.push(Span::styled(format!(" {}", p.track_count), Style::new().fg(th.muted)));
+                    if !on.is_empty() {
+                        spans.push(Span::styled(format!("  ✓ {}", on.join(",")), Style::new().fg(th.ready)));
+                    }
+                    ListItem::new(Line::from(spans))
                 }
-                Entry::Remote { target, playlist } => ListItem::new(
+                Entry::Remote { target, playlist } => ListItem::new(Line::from(Span::styled(
                     format!(
-                        "{target}: {} ({}){}",
+                        "{target}: {} {}{}",
                         playlist.title,
                         playlist.tracks,
                         if playlist.smart { " ✦" } else { "" }
-                    )
-                    .dim(),
-                ),
+                    ),
+                    Style::new().fg(th.muted),
+                ))),
             })
             .collect();
         let list = List::new(items)
-            .block(pane_block(" Playlists ", self.pane == 0))
-            .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+            .block(self.pane(" Playlists ", self.pane == 0))
+            .highlight_style(Style::new().bg(th.selection_bg).fg(th.selection_fg).bold());
         f.render_stateful_widget(list, area, &mut self.left);
     }
 
     fn draw_playlist_tracks(&mut self, f: &mut Frame, area: Rect) {
+        let th = self.theme.clone();
         if let Some(Entry::Remote { target, playlist }) = self.entries.get(self.left.selected().unwrap_or(0)) {
             let msg = format!("{} tracks on {target}; tapedeck only lists its own tracks here", playlist.tracks);
-            f.render_widget(Paragraph::new(msg).block(pane_block(" Tracks ", false)), area);
+            f.render_widget(
+                Paragraph::new(Span::styled(msg, Style::new().fg(th.muted))).block(self.pane(" Tracks ", false)),
+                area,
+            );
             return;
         }
         let rows: Vec<Row> = self
@@ -705,19 +822,22 @@ impl Tui {
             .into_iter()
             .map(|t| {
                 Row::new(vec![
-                    status_cell(&t.status),
+                    self.badge(&t.status),
                     Cell::from(t.artist.clone()),
                     Cell::from(t.title.clone()),
-                    Cell::from(t.album.clone()),
-                    Cell::from(t.year.map(|y| y.to_string()).unwrap_or_default()),
-                    Cell::from(mmss(t.duration_ms)),
+                    Cell::from(Span::styled(t.album.clone(), Style::new().fg(th.muted))),
+                    Cell::from(Span::styled(
+                        t.year.map(|y| y.to_string()).unwrap_or_default(),
+                        Style::new().fg(th.muted),
+                    )),
+                    Cell::from(Span::styled(mmss(t.duration_ms), Style::new().fg(th.muted))),
                 ])
             })
             .collect();
         let table = Table::new(
             rows,
             [
-                Constraint::Length(6),
+                Constraint::Length(8),
                 Constraint::Percentage(25),
                 Constraint::Percentage(35),
                 Constraint::Percentage(30),
@@ -725,32 +845,67 @@ impl Tui {
                 Constraint::Length(5),
             ],
         )
-        .header(Row::new(["STATUS", "ARTIST", "TITLE", "ALBUM", "YEAR", "LEN"]).bold())
-        .block(pane_block(" Tracks ", self.pane == 1))
-        .row_highlight_style(Style::default().add_modifier(Modifier::REVERSED));
+        .header(self.header(["STATUS", "ARTIST", "TITLE", "ALBUM", "YEAR", "LEN"]))
+        .block(self.pane(" Tracks ", self.pane == 1))
+        .row_highlight_style(Style::new().bg(th.selection_bg).fg(th.selection_fg).bold());
         f.render_stateful_widget(table, area, &mut self.right);
     }
 
     /// Selected track on the first line, the last two log lines below it.
     fn draw_detail(&self, f: &mut Frame, area: Rect) {
+        let th = &self.theme;
         let selected = match self.selected_track() {
             Some(t) => {
-                let mut parts = vec![format!("#{}", t.id), format!("{} - {}", t.artist, t.title)];
-                parts.extend(t.path.clone());
-                parts.extend(t.source_url.clone());
-                parts.extend(t.error.as_ref().map(|e| format!("error: {e}")));
-                parts.join("  ·  ")
+                let mut spans = vec![
+                    Span::styled(format!("#{}  ", t.id), Style::new().fg(th.muted)),
+                    Span::styled(format!("{} - {}", t.artist, t.title), Style::new().bold()),
+                ];
+                for part in [t.path.clone(), t.source_url.clone()].into_iter().flatten() {
+                    spans.push(Span::styled(format!("  ·  {part}"), Style::new().fg(th.muted)));
+                }
+                if let Some(e) = &t.error {
+                    spans.push(Span::styled(format!("  ·  {e}"), Style::new().fg(th.failed)));
+                }
+                Line::from(spans)
             }
-            None => String::new(),
+            None => Line::default(),
         };
         let tail = self.log.len().saturating_sub(2);
-        let mut lines = vec![Line::from(selected)];
-        lines.extend(self.log[tail..].iter().map(|l| Line::from(l.clone().dim())));
+        let mut lines = vec![selected];
+        lines.extend(self.log[tail..].iter().map(|l| {
+            let colour = if l.starts_with("error") { th.failed } else { th.muted };
+            Line::from(Span::styled(l.clone(), Style::new().fg(colour)))
+        }));
         let title = match self.job {
             Some(_) => format!(" Selected · running {} ", SPINNER[self.ticks % SPINNER.len()]),
             None => " Selected ".to_string(),
         };
-        f.render_widget(Paragraph::new(lines).block(Block::bordered().title(title)), area);
+        f.render_widget(Paragraph::new(lines).block(self.pane(&title, self.job.is_some())), area);
+    }
+
+    /// Rounded, padded pane; the focused one gets the accent border.
+    fn pane(&self, title: &str, focused: bool) -> Block<'static> {
+        let th = &self.theme;
+        Block::bordered()
+            .border_type(BorderType::Rounded)
+            .border_style(Style::new().fg(if focused { th.accent } else { th.border }))
+            .title(Span::styled(title.to_string(), Style::new().fg(if focused { th.accent } else { th.title }).bold()))
+            .padding(Padding::horizontal(1))
+    }
+
+    fn header<const N: usize>(&self, cols: [&'static str; N]) -> Row<'static> {
+        Row::new(cols.map(|c| Cell::from(Span::styled(c, Style::new().fg(self.theme.title).bold()))))
+    }
+
+    /// Status as a coloured pill.
+    fn badge(&self, status: &str) -> Cell<'static> {
+        let th = &self.theme;
+        let colour = match status {
+            "ready" => th.ready,
+            "failed" => th.failed,
+            _ => th.wanted,
+        };
+        Cell::from(Span::styled(format!(" {status} "), Style::new().bg(colour).fg(th.selection_bg).bold()))
     }
 }
 
@@ -817,19 +972,6 @@ fn file_props(path: &std::path::Path) -> String {
         }
         Err(e) => format!("{size}, unreadable: {e}"),
     }
-}
-
-fn status_cell(status: &str) -> Cell<'static> {
-    match status {
-        "ready" => Cell::from("ready").green(),
-        "failed" => Cell::from("failed").red(),
-        s => Cell::from(s.to_string()).yellow(),
-    }
-}
-
-fn pane_block(title: &str, focused: bool) -> Block<'_> {
-    let b = Block::bordered().title(title.to_string());
-    if focused { b.border_style(Style::default().cyan()) } else { b }
 }
 
 fn mmss(ms: Option<i64>) -> String {

@@ -17,6 +17,7 @@ src/
   download/        Downloader trait, yt-dlp implementation
   sync/            SyncTarget trait, Plex implementation
   tui.rs           `td tui` / plain `td`: ratatui browser; actions reuse the CLI commands
+  theme.rs         TUI colours from TOML; built-ins in themes/
   render.rs        tables / key-value lines for human output
 ```
 
@@ -153,7 +154,11 @@ artists › albums › songs, regrouped from the track table on every draw (chea
 cache it if that ever shows). *Playlists* lists local playlists with their sync marks and remote
 playlists dimmed, with the tracks of the selected one on the right. `/` filters by artist, title
 or album in both tabs; the pane below shows the selected track's id, path, source URL and error,
-plus the last lines of whatever action is running. Keys follow vim and less: `hjkl`, `^D`/`^U`
+plus the last lines of whatever action is running. Colours come from a `Theme` (`theme.rs`): a small TOML of named colours, two Catppuccin
+flavours compiled in and user files under `<config dir>/themes/` taking precedence, selected by
+`theme` in the config. The TUI never sets a background, so it sits on whatever the terminal
+has. The header is a four-line cassette drawn from the theme's stripe colours, with the tabs and
+the library's size beside it. Keys follow vim and less: `hjkl`, `^D`/`^U`
 half page, `^F`/`^B` page, `g`/`G`, `Tab`, `[`/`]` or `1`/`2` for tabs. `i` (or `Enter` on a
 track) opens a popup with the tags, what is on disk (format, bitrate, sample rate, length, size,
 read from the file's header on the spot, so it reflects the real download), the source URL, and

@@ -22,6 +22,12 @@ pub struct Config {
     pub database: Option<PathBuf>,
     /// Daemon socket. Default: `$XDG_RUNTIME_DIR/tapedeck.sock`.
     pub socket: Option<PathBuf>,
+    /// TUI theme: a built-in name or `<config dir>/themes/<name>.toml`.
+    #[serde(default = "default_theme")]
+    pub theme: String,
+    /// Folder the config file was read from; themes live in its `themes/` subfolder.
+    #[serde(skip)]
+    pub config_dir: PathBuf,
     pub listenbrainz: ListenBrainz,
     #[serde(default)]
     pub download: Download,
@@ -91,6 +97,9 @@ impl Default for Sync {
     }
 }
 
+fn default_theme() -> String {
+    crate::theme::DEFAULT.into()
+}
 fn default_template() -> String {
     "{album_artist}/{album} ({year})/{track:02} - {title}.{ext}".into()
 }
@@ -128,6 +137,7 @@ impl Config {
         let text = std::fs::read_to_string(&path)
             .with_context(|| format!("reading config {} (see config.example.toml)", path.display()))?;
         let mut cfg = Self::parse(&text)?;
+        cfg.config_dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
         cfg.resolve_secrets()?;
         Ok(cfg)
     }
@@ -162,6 +172,10 @@ impl Config {
 
     pub fn playlist_dir(&self) -> PathBuf {
         self.playlist_dir.clone().unwrap_or_else(|| self.library.join("playlists"))
+    }
+
+    pub fn themes_dir(&self) -> PathBuf {
+        self.config_dir.join("themes")
     }
 
     pub fn database_path(&self) -> PathBuf {

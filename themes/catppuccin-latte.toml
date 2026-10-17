@@ -1,0 +1,15 @@
+# tapedeck theme: Catppuccin Latte (built in), for light terminals.
+name = "Catppuccin Latte"
+
+text = "#4c4f69"
+muted = "#9ca0b0"
+accent = "#1e66f5"
+border = "#bcc0cc"
+title = "#7287fd"
+selection_bg = "#ccd0da"
+selection_fg = "#4c4f69"
+ready = "#40a02b"
+failed = "#d20f39"
+wanted = "#df8e1d"
+warning = "#fe640b"
+stripes = ["#d20f39", "#fe640b", "#df8e1d"]

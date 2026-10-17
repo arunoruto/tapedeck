@@ -12,6 +12,7 @@ A complete example lives in [`config.example.toml`](../config.example.toml).
 |---|---|---|
 | `library` | required | Root of the music library. Downloads land under it. |
 | `path_template` | `{album_artist}/{album} ({year})/{track:02} - {title}.{ext}` | Where a track is filed, relative to `library`. See below. |
+| `theme` | `catppuccin-mocha` | TUI colours. A built-in name (`catppuccin-mocha`, `catppuccin-latte`) or the stem of a file in `themes/` next to `config.toml`. See [Themes](#themes). |
 | `playlist_dir` | `<library>/playlists` | Where the m3u8 files go: one current file per playlist kind (`weekly-jams.m3u8`), superseded ones under `archive/<kind>/`, playlist backups under `backup/<target>/`. Lowercase slugs throughout. |
 | `database` | `$XDG_DATA_HOME/tapedeck/tapedeck.db` | SQLite file. |
 | `socket` | `$XDG_RUNTIME_DIR/tapedeck.sock` | Daemon socket. Falls back next to the database if `XDG_RUNTIME_DIR` is unset. |
@@ -134,3 +135,35 @@ Plex playlist is named after the playlist kind (`Weekly Jams`), so it is replace
 week rather than piling up. The m3u8 on disk (`playlists/weekly-jams.m3u8`) follows the same
 rule; the week it replaces is kept under `playlists/archive/weekly-jams/2026-w41.m3u8`. Tracks
 that leave a playlist stay in the library.
+
+## Themes
+
+The TUI takes its colours from a theme. Two are built in, `catppuccin-mocha` (default) and
+`catppuccin-latte` for light terminals. To make your own, drop a TOML file into `themes/` next
+to `config.toml` (so `~/.config/tapedeck/themes/mine.toml` by default) and set
+`theme = "mine"`. A user file with a built-in's name replaces it.
+
+Every key is required; colours are `"#rrggbb"` or terminal names such as `"blue"`,
+`"lightred"`, `"gray"`. The built-in files in the repository's `themes/` folder are the
+reference; this is Mocha:
+
+```toml
+name = "Catppuccin Mocha"
+
+text = "#cdd6f4"          # normal text
+muted = "#6c7086"         # help line, secondary text, remote playlists
+accent = "#89b4fa"        # focused pane border, active tab, key hints
+border = "#45475a"        # unfocused pane borders
+title = "#b4befe"         # pane titles
+selection_bg = "#313244"  # highlighted row
+selection_fg = "#f5e0dc"
+ready = "#a6e3a1"         # status colours
+failed = "#f38ba8"
+wanted = "#f9e2af"
+warning = "#fab387"       # confirmations, status messages
+stripes = ["#f38ba8", "#fab387", "#f9e2af"]   # the cassette stripes, any number of colours
+```
+
+The terminal's own background is left alone, so a theme only needs to pick colours that read
+on it. With Home Manager, `xdg.configFile."tapedeck/themes/mine.toml".source = ./mine.toml;`
+puts a theme next to the generated config.

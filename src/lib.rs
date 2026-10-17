@@ -10,6 +10,7 @@ pub mod m3u;
 pub mod musicbrainz;
 pub mod render;
 pub mod sync;
+pub mod theme;
 pub mod tui;
 
 pub use app::{App, Event};
