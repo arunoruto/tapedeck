@@ -294,6 +294,14 @@ impl Db {
         })
     }
 
+    pub fn clear_sync(&self, playlist_id: i64, target: &str) -> Result<()> {
+        self.0.execute(
+            "DELETE FROM playlist_syncs WHERE playlist_id = ?1 AND target = ?2",
+            params![playlist_id, target],
+        )?;
+        Ok(())
+    }
+
     pub fn record_sync(&self, playlist_id: i64, target: &str, remote_id: &str) -> Result<()> {
         self.0.execute(
             "INSERT INTO playlist_syncs (playlist_id, target, remote_id) VALUES (?1, ?2, ?3)

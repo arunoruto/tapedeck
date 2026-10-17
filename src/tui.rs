@@ -18,6 +18,7 @@ use tokio::{runtime::Handle, sync::mpsc, task::JoinHandle};
 
 use crate::{
     Event as TdEvent,
+    app::remote_title,
     cli::{Command, RemoteCmd},
     config::Config,
     daemon,
@@ -37,8 +38,16 @@ const SPINNER: [char; 4] = ['|', '/', '-', '\\'];
 
 /// What the playlists tab's left pane can point at.
 enum Entry {
-    Local(Playlist),
-    Remote { target: &'static str, playlist: RemotePlaylist },
+    /// A fetched playlist; `title` is its name on the targets, `on` the targets that have it now.
+    Local {
+        playlist: Playlist,
+        title: String,
+        on: Vec<&'static str>,
+    },
+    Remote {
+        target: &'static str,
+        playlist: RemotePlaylist,
+    },
 }
 
 enum Mode {
@@ -174,7 +183,15 @@ fn sync_now(no_fetch: bool) -> Command {
 impl Tui {
     fn reload(&mut self, remote: Vec<(&'static str, RemotePlaylist)>) -> Result<()> {
         self.all = self.db.all_tracks()?;
-        self.entries = self.db.playlists()?.into_iter().map(Entry::Local).collect();
+        let playlists = self.db.playlists()?;
+        self.entries = playlists
+            .iter()
+            .map(|p| {
+                let title = remote_title(&self.config, p, &playlists);
+                let on = remote.iter().filter(|(_, r)| r.title == title).map(|(t, _)| *t).collect();
+                Entry::Local { playlist: p.clone(), title, on }
+            })
+            .collect();
         self.entries.extend(remote.into_iter().map(|(target, playlist)| Entry::Remote { target, playlist }));
         self.select_left(self.left.selected().unwrap_or(0).min(self.entries.len().saturating_sub(1)))
     }
@@ -199,7 +216,7 @@ impl Tui {
     fn select_left(&mut self, i: usize) -> Result<()> {
         self.left.select(Some(i));
         self.tracks = match self.entries.get(i) {
-            Some(Entry::Local(p)) => self.db.playlist_tracks(p.id)?,
+            Some(Entry::Local { playlist, .. }) => self.db.playlist_tracks(playlist.id)?,
             _ => vec![],
         };
         self.right.select(Some(0));
@@ -417,13 +434,33 @@ impl Tui {
                 }
             }
             KeyCode::Char('p') => match self.selected_entry() {
-                Some(Entry::Local(p)) => {
+                Some(Entry::Local { playlist, title, .. }) => {
+                    // The current playlist of a kind goes by id; an archived one by its file, so
+                    // it lands on the target under its own (dated) title.
+                    let arg = match &playlist.m3u_path {
+                        Some(f) if remote_title(&self.config, playlist, std::slice::from_ref(playlist)) != *title => {
+                            f.clone()
+                        }
+                        _ => playlist.id.to_string(),
+                    };
                     self.mode = Mode::Confirm {
-                        msg: format!("Push {} to every sync target?", p.name),
-                        then: Pending::Run(vec![Command::Push { playlist: p.id.to_string(), to: None }]),
+                        msg: format!(
+                            "Push {title:?} to every sync target? A same-titled copy there is backed up and replaced."
+                        ),
+                        then: Pending::Run(vec![Command::Push { playlist: arg, to: None, title: None }]),
                     }
                 }
                 _ => self.status = "select a local playlist to push".into(),
+            },
+            KeyCode::Char('u') => match self.selected_entry() {
+                Some(Entry::Local { title, on, .. }) if !on.is_empty() => {
+                    self.mode = Mode::Confirm {
+                        msg: format!("Remove {title:?} from {}? Backed up first; the local file stays.", on.join(", ")),
+                        then: Pending::Run(vec![Command::Unpush { playlist: title.clone(), to: None, yes: true }]),
+                    }
+                }
+                Some(Entry::Local { .. }) => self.status = "not on any target".into(),
+                _ => self.status = "select a local playlist to remove from the targets".into(),
             },
             KeyCode::Char('d') => match (self.pane, self.selected_entry()) {
                 (0, Some(Entry::Remote { target, playlist })) => {
@@ -441,7 +478,7 @@ impl Tui {
                         }]),
                     }
                 }
-                (0, Some(Entry::Local(_))) => {
+                (0, Some(Entry::Local { .. })) => {
                     self.status = "local playlists mirror ListenBrainz; delete tracks or remote copies instead".into()
                 }
                 _ => {
@@ -536,6 +573,8 @@ impl Tui {
                 " source · ".dim(),
                 "p".bold(),
                 " push · ".dim(),
+                "u".bold(),
+                " unpush · ".dim(),
                 "d".bold(),
                 " delete · q quit ".dim(),
                 self.status.clone().yellow(),
@@ -619,13 +658,10 @@ impl Tui {
             .entries
             .iter()
             .map(|e| match e {
-                Entry::Local(p) => {
-                    let synced = if p.synced.is_empty() {
-                        String::new()
-                    } else {
-                        format!(" → {}", p.synced.iter().map(|s| s.target.as_str()).collect::<Vec<_>>().join(","))
-                    };
-                    ListItem::new(format!("{} ({}){synced}", p.name, p.track_count))
+                Entry::Local { playlist: p, title, on } => {
+                    let mark = if on.is_empty() { String::new() } else { format!("  ✓ {}", on.join(",")) };
+                    let label = if *title == p.name { title.clone() } else { format!("{title}: {}", p.name) };
+                    ListItem::new(format!("{label} ({}){mark}", p.track_count))
                 }
                 Entry::Remote { target, playlist } => ListItem::new(
                     format!(

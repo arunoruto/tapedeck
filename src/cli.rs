@@ -46,13 +46,28 @@ pub enum Command {
     Search { query: String },
     /// Playlists and where they have been synced.
     Playlists,
-    /// Push one playlist to the sync targets.
+    /// Push a playlist to the sync targets: a fetched one by id or kind, or any .m3u8 file
+    /// (the archive, a backup, your own). A same-titled remote playlist is backed up, then replaced.
     Push {
-        /// Playlist id or kind.
+        /// Playlist id, kind, or path to an .m3u8 file.
         playlist: String,
         /// Only this target (e.g. plex).
         #[arg(long)]
         to: Option<String>,
+        /// Title on the target (files only; default: the file's #PLAYLIST line, else its name).
+        #[arg(long)]
+        title: Option<String>,
+    },
+    /// Remove a playlist from the sync targets, backing it up first. The local file is never touched.
+    Unpush {
+        /// Remote title, or an .m3u8 file whose remote copy to remove.
+        playlist: String,
+        /// Only this target (e.g. plex).
+        #[arg(long)]
+        to: Option<String>,
+        /// Actually delete; without it, only list what matches.
+        #[arg(long)]
+        yes: bool,
     },
     /// Reset failed tracks to wanted so the next sync retries them; with an id, re-download that
     /// one track (its current file is dropped).

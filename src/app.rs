@@ -84,9 +84,60 @@ impl App {
                 let playlists = self.db().playlists()?;
                 data(tx, json!(playlists)).await
             }
-            Command::Push { playlist, to } => {
+            Command::Push { playlist, to, title } => {
+                let path = Path::new(&playlist);
+                if path.extension().is_some_and(|e| e == "m3u8") && path.is_file() {
+                    return self.push_file(path, title, to.as_deref(), tx).await;
+                }
                 let p = self.db().find_playlist(&playlist)?.with_context(|| format!("no playlist {playlist:?}"))?;
                 self.push(&p, to.as_deref(), tx).await
+            }
+            Command::Unpush { playlist, to, yes } => {
+                let path = Path::new(&playlist);
+                let title = if path.extension().is_some_and(|e| e == "m3u8") && path.is_file() {
+                    self.file_title(path)?
+                } else {
+                    playlist.clone()
+                };
+                for target in self.targets(to.as_deref())? {
+                    let hits: Vec<_> =
+                        target.list_playlists().await?.into_iter().filter(|p| p.title == title && !p.smart).collect();
+                    if hits.is_empty() {
+                        info(tx, format!("{}: nothing called {title:?}", target.name())).await?;
+                        continue;
+                    }
+                    if !yes {
+                        info(
+                            tx,
+                            format!(
+                                "{}: would remove {title:?} ({} tracks); pass --yes",
+                                target.name(),
+                                hits[0].tracks
+                            ),
+                        )
+                        .await?;
+                        continue;
+                    }
+                    self.backup(target, &hits, &self.config.playlist_dir().join("backup"), tx).await?;
+                    for p in &hits {
+                        target.delete_playlist(&p.id).await?;
+                        info(
+                            tx,
+                            format!(
+                                "{}: removed {} ({} tracks); the local file is untouched",
+                                target.name(),
+                                p.title,
+                                p.tracks
+                            ),
+                        )
+                        .await?;
+                    }
+                    let playlists = self.db().playlists()?;
+                    for p in playlists.iter().filter(|p| self.remote_title(p, &playlists) == title) {
+                        self.db().clear_sync(p.id, target.name())?;
+                    }
+                }
+                Ok(())
             }
             Command::Retry { track: None } => {
                 let n = self.db().retry_failed()?;
@@ -677,17 +728,91 @@ impl App {
             .iter()
             .filter_map(|t| t.path.as_ref().map(|rel| self.config.library.join(rel)))
             .collect();
-        let title = self.title(&p.kind);
+        let playlists = self.db().playlists()?;
+        let title = self.remote_title(p, &playlists);
+        self.replace_remote(&title, &files, Some(p.id), only, tx).await
+    }
+
+    /// Push any m3u8 file. Lines are resolved against the file's folder; what is not on disk is
+    /// reported and skipped rather than failing the push.
+    async fn push_file(
+        &self,
+        file: &Path,
+        title: Option<String>,
+        only: Option<&str>,
+        tx: &Sender<Event>,
+    ) -> Result<()> {
+        let title = match title {
+            Some(t) => t,
+            None => self.file_title(file)?,
+        };
+        let base = file.parent().unwrap_or(Path::new("."));
+        let mut files = vec![];
+        for line in
+            std::fs::read_to_string(file)?.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#'))
+        {
+            let path = base.join(line);
+            if path.is_file() {
+                files.push(path);
+            } else {
+                info(tx, format!("missing, skipped: {line}")).await?;
+            }
+        }
+        ensure!(!files.is_empty(), "{} has no tracks that exist on disk", file.display());
+        let playlists = self.db().playlists()?;
+        let id = playlists.iter().find(|p| p.m3u_path.as_deref() == file.to_str()).map(|p| p.id);
+        self.replace_remote(&title, &files, id, only, tx).await
+    }
+
+    /// Back up a same-titled remote playlist, then create or replace it. `row` records the sync.
+    async fn replace_remote(
+        &self,
+        title: &str,
+        files: &[PathBuf],
+        row: Option<i64>,
+        only: Option<&str>,
+        tx: &Sender<Event>,
+    ) -> Result<()> {
         for target in self.targets.iter().filter(|t| only.is_none_or(|o| o == t.name())) {
-            match target.sync_playlist(&title, &files).await {
+            if let Ok(list) = target.list_playlists().await {
+                let same: Vec<_> = list.into_iter().filter(|p| p.title == title && !p.smart).collect();
+                if !same.is_empty() {
+                    self.backup(target.as_ref(), &same, &self.config.playlist_dir().join("backup"), tx).await?;
+                }
+            }
+            match target.sync_playlist(title, files).await {
                 Ok(remote) => {
-                    self.db().record_sync(p.id, target.name(), &remote)?;
+                    if let Some(id) = row {
+                        self.db().record_sync(id, target.name(), &remote)?;
+                    }
                     info(tx, format!("{}: pushed {title} ({} tracks)", target.name(), files.len())).await?;
                 }
                 Err(e) => info(tx, format!("{}: push of {title} failed: {e:#}", target.name())).await?,
             }
         }
         Ok(())
+    }
+
+    /// What a playlist row is called on the targets: the kind's title for the current playlist
+    /// of each kind, the full ListenBrainz title for an archived one.
+    fn remote_title(&self, p: &Playlist, all: &[Playlist]) -> String {
+        remote_title(&self.config, p, all)
+    }
+
+    /// Title for an m3u8 file: its database row's remote title, else its #PLAYLIST line, else
+    /// the file name.
+    fn file_title(&self, file: &Path) -> Result<String> {
+        let playlists = self.db().playlists()?;
+        if let Some(p) = playlists.iter().find(|p| p.m3u_path.as_deref() == file.to_str()) {
+            return Ok(self.remote_title(p, &playlists));
+        }
+        let body = std::fs::read_to_string(file)?;
+        Ok(body
+            .lines()
+            .find_map(|l| l.strip_prefix("#PLAYLIST:"))
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .unwrap_or_else(|| file.file_stem().unwrap_or_default().to_string_lossy().into_owned()))
     }
 
     fn db(&self) -> std::sync::MutexGuard<'_, Db> {
@@ -764,6 +889,18 @@ fn new_track<'a>(recording_mbid: &'a str, r: &'a Recording) -> NewTrack<'a> {
 }
 
 /// "weekly-jams" → "Weekly Jams". Stable across weeks, which is what you want as a Plex playlist name.
+/// What a playlist is called on the targets. `all` is `Db::playlists()`, newest first, so the
+/// first row of a kind is its current playlist and gets `sync.playlist_title`; older rows keep
+/// their full ListenBrainz title, which is also what their archive file says.
+pub fn remote_title(cfg: &Config, p: &Playlist, all: &[Playlist]) -> String {
+    match all.iter().find(|q| q.kind == p.kind) {
+        Some(cur) if cur.id == p.id => {
+            cfg.sync.playlist_title.replace("{name}", &display_name(&p.kind)).replace("{kind}", &p.kind)
+        }
+        _ => p.name.clone(),
+    }
+}
+
 /// First `YYYY-MM-DD` in a ListenBrainz title ("Weekly Jams for rob, week of 2026-10-05 Mon").
 fn date_in(title: &str) -> Option<String> {
     let b = title.as_bytes();

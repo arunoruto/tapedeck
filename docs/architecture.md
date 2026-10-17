@@ -114,6 +114,16 @@ like a download would be and the rest are duplicates. Duplicates are reported, o
 under `<playlist_dir>/backup` whose paths pointed at files that moved or were deleted, so
 `td remote restore` still finds them.
 
+`td push` takes a fetched playlist (id or kind) or any m3u8 file: the archive, a backup,
+something hand-written. File lines are resolved against the file's folder, lines that are not
+on disk are reported and skipped, and the title comes from `--title`, the file's database row
+(the kind's title for the current playlist, the ListenBrainz title for an archived one), its
+`#PLAYLIST` line, or the file name, in that order. Before any push the same-titled remote
+playlist, if there is one, is backed up like `remote rm` does. `td unpush` removes a playlist
+from the targets only, backup first; nothing on disk changes. In the TUI these are `p` and `u`
+on a playlist row, and a `✓ plex` mark shows which targets currently hold a playlist under
+that title.
+
 `td remote ls` and `td remote rm GLOB` talk to the sync targets' own playlist lists, so the
 history another tool left behind (`Weekly-Jams-2026-Week*`) can be cleared without opening
 Plex. `rm` only lists matches until `--yes` is given, skips the server's own smart playlists
@@ -138,7 +148,7 @@ TUI; those links are how a track is checked for now.
 
 Actions are the CLI's own `Command`s, nothing more: `S` is `td sync`, `R` is `td retry ID`
 followed by `td sync --no-fetch`, `s` asks for a URL and runs `td source` plus the same sync,
-`p` is `td push`, `d` is `td rm ID` for a track or `td remote rm TITLE --yes` for a remote
+`p` is `td push` and `u` is `td unpush`, `d` is `td rm ID` for a track or `td remote rm TITLE --yes` for a remote
 playlist (backup first, as always). They go through `daemon::dispatch`, so with the service
 running the daemon does the work under its lock and the TUI only streams the events; without
 it the command runs in-process. One action at a time. Everything that deletes or re-downloads
