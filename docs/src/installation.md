@@ -49,6 +49,45 @@ docker run -d --name tapedeck \
 docker exec -it tapedeck td status        # any command goes through the daemon's socket
 ```
 
+Or as a `compose.yaml`, with the secret as a file next to it:
+
+```yaml
+services:
+  tapedeck:
+    image: ghcr.io/arunoruto/tapedeck:latest
+    container_name: tapedeck
+    restart: unless-stopped
+    ports:
+      - "8687:8687"
+    volumes:
+      - /srv/music:/music
+      - tapedeck-data:/data
+      # - ./config.toml:/config.toml:ro     # instead of, or on top of, the variables below
+      # - ./themes:/themes:ro
+    environment:
+      TAPEDECK_LIBRARY: /music
+      TAPEDECK_LISTENBRAINZ__USER: you
+      TAPEDECK_LISTENBRAINZ__PLAYLISTS: '["weekly-jams", "weekly-exploration", "daily-jams"]'
+      TAPEDECK_SYNC__TARGETS: '["plex"]'
+      TAPEDECK_SYNC__PLEX__URL: http://plex:32400
+      TAPEDECK_SYNC__PLEX__SECTION: Music
+      TAPEDECK_SYNC__PLEX__TOKEN_FILE: /run/secrets/plex-token
+    secrets:
+      - plex-token
+
+secrets:
+  plex-token:
+    file: ./plex-token
+
+volumes:
+  tapedeck-data:
+```
+
+```sh
+docker compose up -d
+docker compose exec -it tapedeck td status
+```
+
 The image runs `td daemon`. Configuration comes from [environment variables](configuration.md#environment-variables),
 from a file mounted at `/config.toml`, or both (environment wins); themes go next to the
 file, in `/themes`. The database and the socket live under `/data`, so give that a volume.
