@@ -43,7 +43,7 @@ as `sha-<short sha>` only, so `latest` never moves to an untested commit.
 docker run -d --name tapedeck \
   -v /srv/music:/music -v tapedeck-data:/data -p 8687:8687 \
   -e TAPEDECK_LIBRARY=/music -e TAPEDECK_LISTENBRAINZ__USER=you \
-  -e TAPEDECK_SYNC__TARGETS='["plex"]' -e TAPEDECK_SYNC__PLEX__URL=http://plex:32400 \
+  -e TAPEDECK_SYNC__TARGETS='["plex"]' -e TAPEDECK_SYNC__PLEX__URL=http://plex:32400 -e TAPEDECK_SYNC__PLEX__SECTION=Music \
   -e TAPEDECK_SYNC__PLEX__TOKEN_FILE=/run/secrets/plex-token -v ./plex-token:/run/secrets/plex-token:ro \
   ghcr.io/arunoruto/tapedeck:latest
 docker exec -it tapedeck td status        # any command goes through the daemon's socket
