@@ -41,3 +41,7 @@ section = "Music"
 # paths = ["/srv/music/releases"]
 # scan_interval = "1h"                              # daemon rescans on its own clock; "0" = only at sync
 # prefer_external = "ask"                           # auto: replace own copies; ask: report them; never
+
+# [telegram]                                        # song requests from a Telegram chat
+# token_file = "/run/secrets/tapedeck/telegram-token"
+# allowed_users = [123456789]

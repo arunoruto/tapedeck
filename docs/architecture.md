@@ -19,6 +19,8 @@ src/
   tui.rs           `td tui` / plain `td`: ratatui browser; actions reuse the CLI commands
   theme.rs         TUI colours from TOML; built-ins in themes/
   external.rs      read-only external libraries (Lidarr): index, dedupe, reconcile
+  request.rs       song requests: analyse a link, judge, fetch, file, Requests playlist
+  telegram.rs      the Telegram bot (long polling) on top of request.rs
   render.rs        tables / key-value lines for human output
 ```
 
@@ -168,6 +170,23 @@ sidecar under `<playlist_dir>/backup/<target>/<slug>.m3u8` (the real title stays
 Long loops (import's resolving pass, refile) report a `progress` event per item. On a terminal
 it overwrites itself on one line; in a pipe or the journal it is dropped; with `--json` it is one
 more NDJSON line, so a script can show its own counter.
+
+## Song requests
+
+`request.rs` is the pipeline, `telegram.rs` one way in, `td request` the other. A link is
+probed with `yt-dlp --dump-json`; the title is cleaned of "(Official Video)"-style noise and
+split into artist and title with the channel name deciding which side is which, YouTube
+Music's own track/artist fields win when present. MusicBrainz is asked for candidates with
+the same ranking the sync uses, and `judge` says whether the top one can be taken without
+asking: same normalised title, compatible artist, identical version words (remix, live, …),
+uploaded by the artist or a label/Topic channel, and for a music track a length within 20 s.
+Fulfilling inserts the recording's row, downloads through the usual YouTube-Music-first path
+(falling back to the link's own audio when that fails), files it, and prepends it to the
+`requests-<year>` playlist, which is an ordinary playlist kind, so it gets its own current
+m3u8 and Plex playlist and the sync's archive logic never touches it. "Exactly this video"
+files the link as sent under a `youtube:<id>` recording id; refile skips such rows. The bot
+keeps open questions in memory keyed by its own message ids; buttons, 👎 reactions and
+`/wrong` replies all route back to them. Every fulfilment runs under the daemon's busy lock.
 
 ## External libraries
 

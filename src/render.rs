@@ -6,6 +6,7 @@ use serde_json::Value;
 /// still in `--json`.
 const COLUMNS: &[&str] = &[
     "id",
+    "pick",
     "kind",
     "date",
     "status",
@@ -13,6 +14,7 @@ const COLUMNS: &[&str] = &[
     "title",
     "album",
     "year",
+    "length",
     "track_no",
     "name",
     "folder",

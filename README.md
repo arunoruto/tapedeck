@@ -79,6 +79,8 @@ binary is called `td`.
   MusicBrainz recording and checked again after the download, so you get the album audio
   rather than the music video with the two-minute intro.
 - **Plex sync** that scans the library, matches files and recreates the playlist.
+- **Song requests from Telegram**: send a link or "Artist - Title", get the proper recording
+  filed and a yearly Requests playlist on Plex; it asks only when it is not sure.
 - **Other libraries respected**: point it at Lidarr's folder and a recording that exists there
   is never downloaded again; playlists use the better copy, and own duplicates can be swapped out.
 - **Daemon or one-shot, same CLI.** `td daemon` runs on an interval and listens on a Unix
@@ -184,6 +186,7 @@ Everything else has a default. The full reference is in
 | `td import DIR [--apply] [--move] [--delete-duplicates]` | Bring an existing folder (say, Explo's downloads) into the library; dry run by default, `--apply` copies and leaves the source alone, `--move` moves |
 | `td remote ls` / `td remote rm GLOB [--yes]` | List or bulk-delete playlists on a sync target; `rm` backs up first |
 | `td remote backup [GLOB]` / `td remote restore FILE` | Save target playlists as m3u8 + JSON, or recreate one from such a file |
+| `td request URL\|"Artist - Title" [--pick N] [--video]` | Request one song: identify, fetch, file, add to this year's Requests playlist |
 | `td external scan` / `td external dedupe [--dry-run]` | Index read-only libraries (Lidarr) and replace own copies of recordings they hold |
 | `td remote relink --from DIR` | Point backup entries under DIR at the library's copy of the same recording; run before deleting an imported folder |
 | `td daemon` | Run as a service: listen on the socket, sync every `sync.interval` |

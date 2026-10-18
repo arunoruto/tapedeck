@@ -310,9 +310,26 @@ impl App {
                         .await
                     }
                     None => {
+                        info(tx, format!("heard: {} - {} ({})", a.source.artist, a.source.title, a.source.raw_title))
+                            .await?;
                         info(tx, format!("not sure: {}; pick with --pick N or take the link with --video", a.reason))
                             .await?;
-                        data(tx, json!(a)).await
+                        let rows: Vec<Value> = a
+                            .candidates
+                            .iter()
+                            .enumerate()
+                            .map(|(i, c)| {
+                                json!({
+                                    "pick": i + 1,
+                                    "artist": c.artist,
+                                    "title": c.title,
+                                    "album": c.album,
+                                    "length": c.length_ms.map(|ms| format!("{}:{:02}", ms / 60000, (ms / 1000) % 60)),
+                                    "recording_mbid": c.mbid,
+                                })
+                            })
+                            .collect();
+                        data(tx, json!(rows)).await
                     }
                 }
             }
