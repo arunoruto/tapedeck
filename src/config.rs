@@ -61,6 +61,20 @@ pub struct Server {
     /// (the audio), "listen" (scrobbles), plus optionally "request" and "sync".
     #[serde(default = "default_anonymous")]
     pub anonymous: Vec<String>,
+    /// Sign-in for Subsonic clients on `/rest/`.
+    #[serde(default)]
+    pub subsonic: Subsonic,
+}
+
+/// `[server.subsonic]`. Without `user`, every Subsonic client is anonymous and gets the
+/// `anonymous` scopes, enough on a LAN. With `user` and `password`/`password_file`, clients must
+/// sign in (the protocol's salted-MD5 token or the password itself) and then may do everything.
+#[derive(Deserialize, Clone, Debug, Default)]
+#[serde(deny_unknown_fields)]
+pub struct Subsonic {
+    pub user: Option<String>,
+    pub password: Option<String>,
+    pub password_file: Option<PathBuf>,
 }
 
 fn default_anonymous() -> Vec<String> {
@@ -318,6 +332,13 @@ impl Config {
                 bail!("[server] anonymous: unknown scope {scope:?} (read, stream, listen, request, sync)");
             }
         }
+        let sub = &cfg.server.subsonic;
+        if sub.user.is_some() && sub.password.is_none() && sub.password_file.is_none() {
+            bail!("[server.subsonic] user needs password or password_file");
+        }
+        if sub.user.is_none() && (sub.password.is_some() || sub.password_file.is_some()) {
+            bail!("[server.subsonic] password needs user");
+        }
         if !matches!(cfg.external.prefer_external.as_str(), "auto" | "ask" | "never") {
             bail!("external.prefer_external must be auto, ask or never");
         }
@@ -345,6 +366,11 @@ impl Config {
         read_token(&mut self.listenbrainz.token, &self.listenbrainz.token_file, "[listenbrainz]")?;
         read_token(&mut self.telegram.token, &self.telegram.token_file, "[telegram]")?;
         read_token(&mut self.server.token, &self.server.token_file, "[server]")?;
+        read_token(
+            &mut self.server.subsonic.password,
+            &self.server.subsonic.password_file,
+            "[server.subsonic] password",
+        )?;
         read_token(&mut self.remote.token, &self.remote.token_file, "[remote]")?;
         if let Some(p) = &mut self.sync.plex {
             read_token(&mut p.token, &p.token_file, "[sync.plex]")?;
@@ -404,12 +430,14 @@ fn parse_duration(value: &str, key: &str) -> Result<Duration> {
     Ok(Duration::from_secs(n * mult))
 }
 
-fn read_token(token: &mut Option<String>, file: &Option<PathBuf>, section: &str) -> Result<()> {
+/// `what` is "[section]" for a token, "[section] password" for anything else.
+fn read_token(token: &mut Option<String>, file: &Option<PathBuf>, what: &str) -> Result<()> {
+    let (section, key) = what.split_once(' ').unwrap_or((what, "token"));
     match (&token, file) {
-        (Some(_), Some(_)) => bail!("{section}: set token or token_file, not both"),
+        (Some(_), Some(_)) => bail!("{section}: set {key} or {key}_file, not both"),
         (None, Some(f)) => {
             let text =
-                std::fs::read_to_string(f).with_context(|| format!("{section}: reading token_file {}", f.display()))?;
+                std::fs::read_to_string(f).with_context(|| format!("{section}: reading {key}_file {}", f.display()))?;
             *token = Some(text.trim().to_string());
         }
         _ => {}

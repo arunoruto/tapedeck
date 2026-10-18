@@ -49,6 +49,9 @@ section = "Music"
 
 # [server]                                          # HTTP API for td on other machines
 # listen = "0.0.0.0:8687"
+# [server.subsonic]                                 # sign-in for Subsonic clients (cliamp, Symfonium, …); without it they are anonymous
+# user = "mirza"
+# password_file = "/run/secrets/subsonic-password"
 # anonymous = ["read", "stream", "listen"]          # without a token; add "request" and/or "sync" if you like
 # token_file = "/run/secrets/tapedeck/api-token"    # optional admin token
 

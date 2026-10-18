@@ -87,6 +87,9 @@ binary is called `td`.
   filed and a yearly Requests playlist on Plex; it asks only when it is not sure.
 - **Other libraries respected**: point it at Lidarr's folder and a recording that exists there
   is never downloaded again; playlists use the better copy, and own duplicates can be swapped out.
+- **A Subsonic server, too.** Point cliamp, Symfonium, Feishin or any Subsonic app at the
+  daemon's port: playlists, browsing by MusicBrainz artist and album, cover art, streaming and
+  scrobbling to ListenBrainz, with sign-in optional on a LAN.
 - **Daemon or one-shot, same CLI.** `td daemon` runs on an interval and listens on a Unix
   socket; every other `td` command talks to it if it's running and does the work itself if
   not.

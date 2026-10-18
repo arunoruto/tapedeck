@@ -76,6 +76,19 @@ yt-dlp is searched with `ytsearch1:<artist> - <title>` unless a track has an exp
 | `section` | Name of the music library section, usually `Music`. |
 | `path_map` | Local prefix → the prefix Plex sees, e.g. `{ "/srv/music" = "/music" }` for a container. Longest match wins. Leave out if identical. |
 
+## `[server.subsonic]`
+
+Sign-in for [Subsonic clients](subsonic.md) on `/rest/`, served on the `[server] listen` port.
+Without `user`, every Subsonic client is anonymous and gets the `anonymous` scopes (enough on
+a LAN). With `user` and `password` or `password_file`, clients must sign in and then may do
+everything.
+
+```toml
+[server.subsonic]
+user = "mirza"
+password_file = "/run/secrets/subsonic-password"
+```
+
 ## Environment variables
 
 Every key can also come from the environment, which is how a container gets its paths and

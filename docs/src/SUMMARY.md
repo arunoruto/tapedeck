@@ -9,6 +9,7 @@
 - [Playlists and Plex](playlists.md)
 - [The TUI](tui.md)
 - [Remote use](remote.md)
+- [Subsonic clients](subsonic.md)
 - [Song requests](requests.md)
 - [External libraries](external.md)
 - [Migrating from Explo](migrating.md)

@@ -37,3 +37,5 @@ socket, keeps full rights.
 Plain HTTP, so keep the port to the LAN or Tailscale. Note that the default anonymous scopes
 expose the library listing and the audio to anyone who can reach the port.
 
+Players that speak Subsonic (cliamp, Symfonium, Feishin, …) use the same port; see
+[Subsonic clients](subsonic.md).

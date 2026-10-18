@@ -13,6 +13,7 @@ pub mod musicbrainz;
 pub mod player;
 pub mod render;
 pub mod request;
+pub mod subsonic;
 pub mod sync;
 pub mod telegram;
 pub mod theme;
