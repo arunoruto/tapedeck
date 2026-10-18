@@ -253,7 +253,7 @@ recording's credit (`Bonobo feat. Nicole Miglis`); `artists` holds the artist en
 **Artist folders follow the MusicBrainz entity, with a per-artist pin.** Bands rename
 (Eskimo Callboy → Electric Callboy) and a folder per spelling is the thing nobody wants, so the
 folder name is the entity's current name, refreshed on every lookup; `td refile` reports
-"artist renamed on MusicBrainz: X → Y" and moves the files. When the entity name is not what
+"artist folder changed: X → Y (N tracks)" (or "would change" in a dry run) and moves the files. When the entity name is not what
 belongs on disk (Miley Cyrus became "MILEY" in 2026), `td artist "MILEY" --folder "Miley Cyrus"`
 pins a name for that artist (`--unpin` follows MusicBrainz again); `td artists` lists both
 columns. Pins live in `artists.folder` and win everywhere the album artist is rendered. Filing by `{album_artist}` keeps an album in one

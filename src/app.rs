@@ -270,7 +270,9 @@ impl App {
         let total = tracks.len();
         let (mut moved, mut retagged, mut failed) = (0, 0, 0);
         let mut moves: HashMap<PathBuf, PathBuf> = HashMap::new();
-        let names_before = self.db().artist_names()?;
+        // Artist folders that change, old → new, with a track count: the thing to review before
+        // a real run (a MusicBrainz rename, or a pin set or lifted).
+        let mut folder_changes: Vec<(String, String, usize)> = vec![];
         for (i, t) in tracks.iter().enumerate() {
             progress(tx, format!("checking {}/{total}: {} - {}", i + 1, t.artist, t.title)).await?;
             let r = match self.mb.recording(&t.recording_mbid).await {
@@ -307,6 +309,15 @@ impl App {
             if new_rel != Path::new(old_rel) {
                 info(tx, format!("  {old_rel} → {}", new_rel.display())).await?;
                 moved += 1;
+                let top = |p: &Path| p.components().next().map(|c| c.as_os_str().to_string_lossy().into_owned());
+                if let (Some(a), Some(b)) = (top(Path::new(old_rel)), top(&new_rel))
+                    && a != b
+                {
+                    match folder_changes.iter_mut().find(|(x, y, _)| *x == a && *y == b) {
+                        Some(e) => e.2 += 1,
+                        None => folder_changes.push((a, b, 1)),
+                    }
+                }
                 if !dry_run {
                     library::move_track(&cfg.library, Path::new(old_rel), &new_rel)?;
                     self.db().set_path(t.id, &new_rel.to_string_lossy())?;
@@ -324,14 +335,9 @@ impl App {
         }
         let verb = if dry_run { "would move" } else { "moved" };
         self.follow_moves(&moves, tx).await?;
-        // Artists MusicBrainz renamed since we last looked; the moves above already follow.
-        if !dry_run {
-            let after = self.db().artists()?;
-            for a in after.iter().filter(|a| names_before.get(&a.id).is_some_and(|old| *old != a.name)) {
-                let pinned = a.folder.as_deref().map(|f| format!(" (folder pinned to {f:?})")).unwrap_or_default();
-                info(tx, format!("artist renamed on MusicBrainz: {} → {}{pinned}", names_before[&a.id], a.name))
-                    .await?;
-            }
+        for (old, new, n) in &folder_changes {
+            let verb = if dry_run { "would change" } else { "changed" };
+            info(tx, format!("artist folder {verb}: {old} → {new} ({n} tracks)")).await?;
         }
         let retag = if dry_run { String::new() } else { format!(", {retagged} retagged") };
         info(tx, format!("{total} tracks checked, {moved} {verb}{retag}, {failed} failed")).await?;

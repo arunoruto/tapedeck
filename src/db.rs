@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -217,21 +216,6 @@ impl Db {
             Ok(Artist { id: r.get(0)?, mbid: r.get(1)?, name: r.get(2)?, folder: r.get(3)?, tracks: r.get(4)? })
         })?;
         Ok(rows.collect::<Result<_, _>>()?)
-    }
-
-    /// Names as MusicBrainz has them right now, by artist id: for spotting renames.
-    pub fn artist_names(&self) -> Result<HashMap<i64, String>> {
-        let mut st = self.0.prepare("SELECT id, name FROM artists")?;
-        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
-        Ok(rows.collect::<Result<_, _>>()?)
-    }
-
-    pub fn artist_folder(&self, mbid: &str) -> Result<Option<String>> {
-        Ok(self
-            .0
-            .query_row("SELECT folder FROM artists WHERE mbid = ?1", [mbid], |r| r.get::<_, Option<String>>(0))
-            .optional()?
-            .flatten())
     }
 
     /// Pin (or with `None` unpin) the folder name used for an artist instead of MusicBrainz's.
