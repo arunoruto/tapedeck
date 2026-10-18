@@ -298,10 +298,11 @@ impl Bot {
             self.send(chat, "Nothing open on that message (the daemon restarted?).", Some(mid), None).await?;
             return Ok(());
         };
-        if let Some(id) = p.track_id
-            && let Ok(()) = self.app.confirm_request(id)
-            && let Ok(Some(t)) = self.app.db().track_by_id(id)
-        {
+        let Some(id) = p.track_id else { return Ok(()) };
+        self.app.confirm_request(id)?;
+        // Bind before the await: the DB guard must not live across it.
+        let track = self.app.db().track_by_id(id)?;
+        if let Some(t) = track {
             let len = t.duration_ms.map(|ms| format!(", {}:{:02}", ms / 60000, (ms / 1000) % 60)).unwrap_or_default();
             self.edit(chat, mid, &format!("✅ Confirmed: {} – {} ({}{len})", t.artist, t.title, t.album)).await?;
         }
