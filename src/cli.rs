@@ -105,6 +105,18 @@ pub enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Request one song: a link (anything yt-dlp handles) or "Artist - Title". Identified on
+    /// MusicBrainz, fetched from the best source, filed, and put on this year's Requests
+    /// playlist. When unsure it lists the candidates instead; rerun with --pick or --video.
+    Request {
+        input: String,
+        /// Take candidate N from a previous unsure answer (1-based).
+        #[arg(long, conflicts_with = "video")]
+        pick: Option<usize>,
+        /// Download the link as it is, tagged from its own metadata.
+        #[arg(long)]
+        video: bool,
+    },
     /// Read-only libraries managed elsewhere (Lidarr): index them, replace own copies.
     External {
         #[command(subcommand)]

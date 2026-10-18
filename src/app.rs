@@ -45,11 +45,11 @@ pub struct App {
     pub config: Config,
     db: Mutex<Db>,
     lb: listenbrainz::ListenBrainz,
-    mb: MusicBrainz,
-    downloader: Box<dyn Downloader>,
+    pub(crate) mb: MusicBrainz,
+    pub(crate) downloader: Box<dyn Downloader>,
     targets: Vec<Box<dyn SyncTarget>>,
     // ponytail: one command at a time; downloads and the sync tick never overlap. Per-command locking if this ever hurts.
-    busy: tokio::sync::Mutex<()>,
+    pub(crate) busy: tokio::sync::Mutex<()>,
 }
 
 impl App {
@@ -288,6 +288,34 @@ impl App {
             }
             Command::Refile { dry_run } => self.refile(dry_run, tx).await,
             Command::Remote { action } => self.remote(action, tx).await,
+            Command::Request { input, pick, video } => {
+                let a = self.analyze_request(&input).await?;
+                let choice = match (pick, video) {
+                    (_, true) => Some(crate::request::Choice::ThisVideo),
+                    (Some(n), _) => Some(crate::request::Choice::Candidate(n.saturating_sub(1))),
+                    (None, false) if a.sure => Some(crate::request::Choice::Candidate(0)),
+                    _ => None,
+                };
+                match choice {
+                    Some(c) => {
+                        let o = self.fulfil_request(&a, c, tx).await?;
+                        let verb = if o.already_had { "already had" } else { "added" };
+                        info(
+                            tx,
+                            format!(
+                                "{verb} {} - {} [{}] → {}",
+                                o.track.artist, o.track.title, o.track.album, o.playlist
+                            ),
+                        )
+                        .await
+                    }
+                    None => {
+                        info(tx, format!("not sure: {}; pick with --pick N or take the link with --video", a.reason))
+                            .await?;
+                        data(tx, json!(a)).await
+                    }
+                }
+            }
             Command::External { action: ExternalCmd::Scan } => {
                 ensure!(!self.config.external.paths.is_empty(), "no external.paths configured");
                 let report = self.external_scan(tx).await?;
@@ -307,7 +335,13 @@ impl App {
     /// move files whose templated path changed.
     async fn refile(&self, dry_run: bool, tx: &Sender<Event>) -> Result<()> {
         let cfg = &self.config;
-        let tracks: Vec<Track> = self.db().all_tracks()?.into_iter().filter(|t| !is_external(t)).collect();
+        // Externals are not ours to touch; "youtube:…" rows (requests taken as the video) have no recording.
+        let tracks: Vec<Track> = self
+            .db()
+            .all_tracks()?
+            .into_iter()
+            .filter(|t| !is_external(t) && library::is_uuid(&t.recording_mbid))
+            .collect();
         let total = tracks.len();
         let (mut moved, mut retagged, mut failed) = (0, 0, 0);
         let mut moves: HashMap<PathBuf, PathBuf> = HashMap::new();
@@ -1103,6 +1137,17 @@ impl App {
         self.config.sync.playlist_title.replace("{name}", &display_name(kind)).replace("{kind}", kind)
     }
 
+    /// Write a playlist's current m3u8 (`playlists/<kind>.m3u8`) and push it to the targets.
+    pub(crate) async fn publish_playlist(&self, pid: i64, tx: &Sender<Event>) -> Result<()> {
+        let cfg = &self.config;
+        let playlists = self.db().playlists()?;
+        let Some(p) = playlists.iter().find(|p| p.id == pid) else { return Ok(()) };
+        let tracks = self.db().playlist_tracks(pid)?;
+        let file = m3u::write(&cfg.playlist_dir(), &cfg.library, &p.kind, &p.name, &tracks)?;
+        self.db().set_playlist_m3u(pid, &file.to_string_lossy())?;
+        self.push(p, None, tx).await
+    }
+
     /// Point playlist backups at files that just moved, whoever moved them.
     pub(crate) async fn follow_moves(&self, moves: &HashMap<PathBuf, PathBuf>, tx: &Sender<Event>) -> Result<()> {
         if moves.is_empty() {
@@ -1452,7 +1497,7 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn new_track<'a>(recording_mbid: &'a str, r: &'a Recording) -> NewTrack<'a> {
+pub(crate) fn new_track<'a>(recording_mbid: &'a str, r: &'a Recording) -> NewTrack<'a> {
     NewTrack {
         recording_mbid,
         title: &r.title,
@@ -1490,7 +1535,7 @@ fn date_in(title: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn display_name(kind: &str) -> String {
+pub(crate) fn display_name(kind: &str) -> String {
     kind.split('-')
         .map(|w| {
             let mut c = w.chars();

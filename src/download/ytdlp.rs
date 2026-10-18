@@ -179,6 +179,12 @@ impl Downloader for YtDlp {
         "ytdlp"
     }
 
+    async fn probe(&self, url: &str) -> Result<Value> {
+        let out = self.run(&["--dump-json", "--no-warnings", "--quiet", "--no-playlist"], url.as_ref()).await?;
+        let line = out.lines().next().context("yt-dlp returned nothing for that link")?;
+        Ok(serde_json::from_str(line).context("yt-dlp metadata")?)
+    }
+
     async fn download(&self, track: &Track, dest_dir: &Path) -> Result<Downloaded> {
         std::fs::create_dir_all(dest_dir)?;
         let urls = match &track.source_url {

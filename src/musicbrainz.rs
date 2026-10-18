@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use reqwest::Client;
+use serde::Serialize;
 use serde_json::Value;
 
 const API: &str = "https://musicbrainz.org/ws/2";
@@ -66,10 +67,25 @@ impl MusicBrainz {
     /// compilation copies, covers).
     pub async fn search_recording(&self, artist: &str, title: &str, length_ms: Option<i64>) -> Result<Option<String>> {
         let title = strip_feat(title);
-        let q = format!("recording:\"{}\" AND artist:\"{}\"", lucene(&title), lucene(artist));
-        let url = format!("{API}/recording/?query={}&limit=100&fmt=json", urlencoding::encode(&q));
-        let v = self.get(&url, &format!("search {artist} - {title}")).await?;
+        let v = self.search(artist, &title).await?;
         Ok(pick_search_hit(&v, artist, &title, length_ms))
+    }
+
+    /// Ranked candidates for a human to choose from (no length cap; the caller judges).
+    pub async fn search_candidates(&self, artist: &str, title: &str, length_ms: Option<i64>) -> Result<Vec<Candidate>> {
+        let title = strip_feat(title);
+        let v = self.search(artist, &title).await?;
+        Ok(search_candidates_from(&v, artist, &title, length_ms))
+    }
+
+    async fn search(&self, artist: &str, title: &str) -> Result<Value> {
+        let q = if artist.is_empty() {
+            format!("recording:\"{}\"", lucene(title))
+        } else {
+            format!("recording:\"{}\" AND artist:\"{}\"", lucene(title), lucene(artist))
+        };
+        let url = format!("{API}/recording/?query={}&limit=100&fmt=json", urlencoding::encode(&q));
+        self.get(&url, &format!("search {artist} - {title}")).await
     }
 }
 
@@ -137,17 +153,62 @@ fn norm(title: &str) -> String {
         .join(" ")
 }
 
-fn version_words(title: &str) -> Vec<&str> {
+pub fn version_words(title: &str) -> Vec<&'static str> {
     let lower = title.to_lowercase();
     VERSION_WORDS.iter().copied().filter(|w| lower.split(|c: char| !c.is_alphanumeric()).any(|tok| tok == *w)).collect()
 }
 
+/// A search hit, enough to show someone and ask.
+#[derive(Debug, Clone, Serialize)]
+pub struct Candidate {
+    pub mbid: String,
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub length_ms: Option<i64>,
+}
+
 fn pick_search_hit(v: &Value, artist: &str, title: &str, length_ms: Option<i64>) -> Option<String> {
+    let best = rank_search_hits(v, artist, title, length_ms).into_iter().next()?;
+    // A different cut is not a match, however well the name fits: a 4:07 radio edit must not
+    // become the 6:09 album take. 20 s, the same rule the downloader applies.
+    if let (Some(want), Some(got)) = (length_ms, best["length"].as_i64())
+        && (want - got).abs() > 20_000
+    {
+        return None;
+    }
+    best["id"].as_str().map(str::to_owned)
+}
+
+/// The filtered, ranked hits as candidates (best first), for flows that ask a human.
+fn search_candidates_from(v: &Value, artist: &str, title: &str, length_ms: Option<i64>) -> Vec<Candidate> {
+    rank_search_hits(v, artist, title, length_ms)
+        .into_iter()
+        .take(5)
+        .filter_map(|r| {
+            let album = r["releases"]
+                .as_array()
+                .and_then(|rs| rs.iter().find(|rel| real_release(rel)).or(rs.first()))
+                .and_then(|rel| rel["title"].as_str())
+                .unwrap_or("")
+                .to_string();
+            Some(Candidate {
+                mbid: r["id"].as_str()?.to_string(),
+                title: r["title"].as_str().unwrap_or("").to_string(),
+                artist: credit(&r["artist-credit"]).0,
+                album,
+                length_ms: r["length"].as_i64(),
+            })
+        })
+        .collect()
+}
+
+fn rank_search_hits<'a>(v: &'a Value, artist: &str, title: &str, length_ms: Option<i64>) -> Vec<&'a Value> {
     const OFF_KINDS: &[&str] = &["karaoke", "instrumental", "live", "cover", "tribute", "remix"];
     let wanted = artist.to_lowercase();
     let allowed = version_words(title);
-    let hits: Vec<&Value> = v["recordings"]
-        .as_array()?
+    let Some(all) = v["recordings"].as_array() else { return vec![] };
+    let mut hits: Vec<&Value> = all
         .iter()
         .filter(|r| r["score"].as_i64().unwrap_or(0) >= 80)
         // Covers match the search too (the work links back to the original); keep the artist's own.
@@ -164,7 +225,7 @@ fn pick_search_hit(v: &Value, artist: &str, title: &str, length_ms: Option<i64>)
     // steps; then the one on the most releases. A popular song has dozens of one-release
     // compilation copies within a few seconds of the album take.
     let want_title = norm(title);
-    let best = hits.iter().min_by_key(|r| {
+    hits.sort_by_cached_key(|r| {
         let drift = match (length_ms, r["length"].as_i64()) {
             (Some(want), Some(l)) => (l - want).abs() / 3000,
             _ => i64::MAX / 2,
@@ -178,15 +239,8 @@ fn pick_search_hit(v: &Value, artist: &str, title: &str, length_ms: Option<i64>)
         });
         let exact = norm(r["title"].as_str().unwrap_or("")) == want_title;
         (!exact, releases.is_empty(), !on_official, drift, -(releases.len() as i64))
-    })?;
-    // A different cut is not a match, however well the name fits: a 4:07 radio edit must not
-    // become the 6:09 album take. 20 s, the same rule the downloader applies.
-    if let (Some(want), Some(got)) = (length_ms, best["length"].as_i64())
-        && (want - got).abs() > 20_000
-    {
-        return None;
-    }
-    best["id"].as_str().map(str::to_owned)
+    });
+    hits
 }
 
 pub fn parse_recording(v: &Value, mbid: &str) -> Result<Recording> {

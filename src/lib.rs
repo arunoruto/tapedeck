@@ -10,7 +10,9 @@ pub mod listenbrainz;
 pub mod m3u;
 pub mod musicbrainz;
 pub mod render;
+pub mod request;
 pub mod sync;
+pub mod telegram;
 pub mod theme;
 pub mod tui;
 

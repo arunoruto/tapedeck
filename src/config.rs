@@ -35,6 +35,19 @@ pub struct Config {
     pub sync: Sync,
     #[serde(default)]
     pub external: External,
+    /// Song requests over Telegram; off unless a token is set.
+    #[serde(default)]
+    pub telegram: Telegram,
+}
+
+#[derive(Deserialize, Clone, Debug, Default)]
+#[serde(deny_unknown_fields)]
+pub struct Telegram {
+    pub token: Option<String>,
+    pub token_file: Option<PathBuf>,
+    /// Telegram user ids that may send requests; everyone else is ignored.
+    #[serde(default)]
+    pub allowed_users: Vec<i64>,
 }
 
 /// Read-only libraries managed by something else (Lidarr). Recordings found there are never
@@ -216,6 +229,7 @@ impl Config {
     /// user only.
     pub fn resolve_secrets(&mut self) -> Result<()> {
         read_token(&mut self.listenbrainz.token, &self.listenbrainz.token_file, "[listenbrainz]")?;
+        read_token(&mut self.telegram.token, &self.telegram.token_file, "[telegram]")?;
         if let Some(p) = &mut self.sync.plex {
             read_token(&mut p.token, &p.token_file, "[sync.plex]")?;
         }

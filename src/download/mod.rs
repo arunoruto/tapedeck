@@ -21,6 +21,8 @@ pub trait Downloader: Send + Sync {
     /// Fetch audio for `track` into `dest_dir`. Honour `track.source_url` when set.
     /// Tagging and filing are not the downloader's job.
     async fn download(&self, track: &Track, dest_dir: &Path) -> Result<Downloaded>;
+    /// Metadata of a link (title, channel, duration, …) without downloading it.
+    async fn probe(&self, url: &str) -> Result<serde_json::Value>;
 }
 
 pub fn from_config(cfg: &Config) -> Result<Box<dyn Downloader>> {

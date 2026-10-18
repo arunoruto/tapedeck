@@ -101,6 +101,19 @@ pub async fn serve(cfg: Config) -> Result<()> {
         });
     }
 
+    if let Some(token) = app.config.telegram.token.clone() {
+        let allowed = app.config.telegram.allowed_users.clone();
+        if allowed.is_empty() {
+            tracing::warn!("telegram: token set but telegram.allowed_users is empty; nobody can send requests");
+        }
+        let bot_app = app.clone();
+        tokio::spawn(async move {
+            if let Err(e) = crate::telegram::run(bot_app, token, allowed).await {
+                tracing::error!("telegram bot stopped: {e:#}");
+            }
+        });
+    }
+
     loop {
         let (stream, _) = listener.accept().await?;
         let app = app.clone();

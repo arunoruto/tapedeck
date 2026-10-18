@@ -252,7 +252,7 @@ impl App {
 }
 
 /// `2026-10-18T01:02:03Z` without pulling in a date crate.
-fn chrono_now() -> String {
+pub(crate) fn chrono_now() -> String {
     let secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0) as i64;
     let days = secs.div_euclid(86_400);
     let rem = secs.rem_euclid(86_400);
