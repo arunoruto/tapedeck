@@ -19,6 +19,7 @@ src/
   tui.rs           `td tui` / plain `td`: ratatui browser; actions reuse the CLI commands
   theme.rs         TUI colours from TOML; built-ins in themes/
   external.rs      read-only external libraries (Lidarr): index, dedupe, reconcile
+  api.rs           HTTP API (POST /cmd, GET /stream) and the client side of [remote]
   request.rs       song requests: analyse a link, judge, fetch, file, Requests playlist
   telegram.rs      the Telegram bot (long polling) on top of request.rs
   render.rs        tables / key-value lines for human output
@@ -173,6 +174,16 @@ carries the paths of files this run moved); `td remote backup` does only that, a
 Long loops (import's resolving pass, refile) report a `progress` event per item. On a terminal
 it overwrites itself on one line; in a pipe or the journal it is dropped; with `--json` it is one
 more NDJSON line, so a script can show its own counter.
+
+## Remote use
+
+`api.rs`. `[server] listen` adds an HTTP face to the daemon with the socket's protocol:
+`POST /cmd` takes a `Command` and streams `Event`s as NDJSON, `GET /stream/<id>` serves a
+track's file with Range support (tower-http's `ServeFile`), both behind a bearer token. On a
+client, `[remote] url` makes `daemon::dispatch` send every command there instead of the socket
+or an in-process `App`, and the TUI loads its data through commands (`tracks`, `playlists`,
+`playlist-tracks`, `remote-playlists`, hidden from `--help`) rather than opening the database,
+so the same binary works against a local or a remote daemon.
 
 ## Song requests
 

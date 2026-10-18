@@ -18,15 +18,17 @@ use ratatui::{
 };
 use tokio::{runtime::Handle, sync::mpsc, task::JoinHandle};
 
+use serde::de::DeserializeOwned;
+
 use crate::{
     Event as TdEvent,
     app::remote_title,
     cli::{Command, RemoteCmd},
     config::Config,
     daemon,
-    db::{Db, Playlist, Track},
+    db::{Playlist, Track},
     render,
-    sync::{self, RemotePlaylist},
+    sync::RemotePlaylist,
     theme::Theme,
 };
 
@@ -45,10 +47,10 @@ enum Entry {
     Local {
         playlist: Playlist,
         title: String,
-        on: Vec<&'static str>,
+        on: Vec<String>,
     },
     Remote {
-        target: &'static str,
+        target: String,
         playlist: RemotePlaylist,
     },
 }
@@ -86,7 +88,6 @@ struct Tui {
     config: Config,
     theme: Theme,
     rt: Handle,
-    db: Db,
     tab: Tab,
     /// Focused pane within the tab, left to right.
     pane: usize,
@@ -119,29 +120,11 @@ struct Shelf<'a> {
 }
 
 pub async fn run(config: Config) -> Result<()> {
-    let db = Db::open(&config.database_path())?;
-    // Remote lists are fetched once up front; everything after that is local and instant. The
-    // token may be readable only by the daemon's user; then the lists are simply absent and
-    // actions still work, since they go through the daemon.
-    let mut remote = vec![];
-    let mut with_secrets = config.clone();
-    match with_secrets.resolve_secrets() {
-        Ok(()) => {
-            for target in sync::from_config(&with_secrets)? {
-                match target.list_playlists().await {
-                    Ok(list) => remote.extend(list.into_iter().map(|p| (target.name(), p))),
-                    Err(e) => tracing::warn!("{}: {e:#}", target.name()),
-                }
-            }
-        }
-        Err(e) => tracing::warn!("remote playlists not listed: {e:#}"),
-    }
     let theme = Theme::load(&config.themes_dir(), &config.theme)?;
     let mut tui = Tui {
         config,
         theme,
         rt: Handle::current(),
-        db,
         tab: Tab::Library,
         pane: 0,
         mode: Mode::Normal,
@@ -160,14 +143,55 @@ pub async fn run(config: Config) -> Result<()> {
         tracks: vec![],
         right: TableState::default().with_selected(Some(0)),
     };
-    tui.reload(remote)?;
+    // Every load goes through the same command path as the CLI: a local database, the local
+    // daemon's socket, or a remote daemon's API, whichever the config says. They run on the
+    // blocking thread, so the TUI never starts a runtime inside a runtime.
     tokio::task::spawn_blocking(move || {
+        // Remote lists are fetched once up front; everything after that is local and instant.
+        let remote: Vec<(String, RemotePlaylist)> = match tui.load::<Vec<RemoteRow>>(Command::RemotePlaylists) {
+            Ok(rows) => rows
+                .into_iter()
+                .map(|r| (r.target, RemotePlaylist { id: r.id, title: r.title, tracks: r.tracks, smart: r.smart }))
+                .collect(),
+            Err(e) => {
+                tracing::warn!("remote playlists not listed: {e:#}");
+                vec![]
+            }
+        };
+        tui.reload(remote)?;
         let mut terminal = ratatui::init();
         let result = tui.event_loop(&mut terminal);
         ratatui::restore();
         result
     })
     .await?
+}
+
+/// One row of the hidden `remote-playlists` command.
+#[derive(serde::Deserialize)]
+struct RemoteRow {
+    target: String,
+    id: String,
+    title: String,
+    tracks: i64,
+    smart: bool,
+}
+
+/// Run a command and return its single `data` payload, deserialised.
+async fn fetch<T: DeserializeOwned>(cfg: &Config, cmd: Command) -> Result<T> {
+    let (tx, mut rx) = mpsc::channel::<TdEvent>(64);
+    let cfg2 = cfg.clone();
+    let worker = tokio::spawn(async move { daemon::dispatch(&cfg2, cmd, tx).await });
+    let mut found: Option<T> = None;
+    while let Some(ev) = rx.recv().await {
+        match ev {
+            TdEvent::Data { data } if found.is_none() => found = Some(serde_json::from_value(data)?),
+            TdEvent::Error { msg } => anyhow::bail!("{msg}"),
+            _ => {}
+        }
+    }
+    worker.await??;
+    found.ok_or_else(|| anyhow::anyhow!("no data came back"))
 }
 
 fn album_artist(t: &Track) -> &str {
@@ -205,14 +229,18 @@ fn sync_now(no_fetch: bool) -> Command {
 }
 
 impl Tui {
-    fn reload(&mut self, remote: Vec<(&'static str, RemotePlaylist)>) -> Result<()> {
-        self.all = self.db.all_tracks()?;
-        let playlists = self.db.playlists()?;
+    fn load<T: DeserializeOwned>(&self, cmd: Command) -> Result<T> {
+        self.rt.block_on(fetch(&self.config, cmd))
+    }
+
+    fn reload(&mut self, remote: Vec<(String, RemotePlaylist)>) -> Result<()> {
+        self.all = self.load(Command::Tracks)?;
+        let playlists: Vec<Playlist> = self.load(Command::Playlists)?;
         self.entries = playlists
             .iter()
             .map(|p| {
                 let title = remote_title(&self.config, p, &playlists);
-                let on = remote.iter().filter(|(_, r)| r.title == title).map(|(t, _)| *t).collect();
+                let on = remote.iter().filter(|(_, r)| r.title == title).map(|(t, _)| t.clone()).collect();
                 Entry::Local { playlist: p.clone(), title, on }
             })
             .collect();
@@ -226,7 +254,7 @@ impl Tui {
             .entries
             .iter()
             .filter_map(|e| match e {
-                Entry::Remote { target, playlist } => Some((*target, playlist.clone())),
+                Entry::Remote { target, playlist } => Some((target.clone(), playlist.clone())),
                 _ => None,
             })
             .collect();
@@ -240,7 +268,7 @@ impl Tui {
     fn select_left(&mut self, i: usize) -> Result<()> {
         self.left.select(Some(i));
         self.tracks = match self.entries.get(i) {
-            Some(Entry::Local { playlist, .. }) => self.db.playlist_tracks(playlist.id)?,
+            Some(Entry::Local { playlist, .. }) => self.load(Command::PlaylistTracks { playlist: playlist.id })?,
             _ => vec![],
         };
         self.right.select(Some(0));

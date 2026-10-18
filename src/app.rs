@@ -80,6 +80,9 @@ impl App {
             Command::Status
                 | Command::Search { .. }
                 | Command::Playlists
+                | Command::Tracks
+                | Command::PlaylistTracks { .. }
+                | Command::RemotePlaylists
                 | Command::Artists
                 | Command::Artist { folder: None, unpin: false, .. }
         );
@@ -95,6 +98,26 @@ impl App {
                 bail!("this command runs in the foreground; it cannot be sent to a running daemon")
             }
             Command::Sync { playlist, no_push, no_fetch } => self.sync(playlist, no_push, no_fetch, tx).await,
+            Command::Tracks => {
+                let tracks = self.db().all_tracks()?;
+                data(tx, json!(tracks)).await
+            }
+            Command::PlaylistTracks { playlist } => {
+                let tracks = self.db().playlist_tracks(playlist)?;
+                data(tx, json!(tracks)).await
+            }
+            Command::RemotePlaylists => {
+                let mut rows = vec![];
+                for target in &self.targets {
+                    match target.list_playlists().await {
+                        Ok(list) => rows.extend(list.into_iter().map(|p| {
+                            json!({ "target": target.name(), "id": p.id, "title": p.title, "tracks": p.tracks, "smart": p.smart })
+                        })),
+                        Err(e) => info(tx, format!("{}: {e:#}", target.name())).await?,
+                    }
+                }
+                data(tx, json!(rows)).await
+            }
             Command::Status => {
                 let counts: serde_json::Map<_, _> =
                     self.db().status_counts()?.into_iter().map(|(k, v)| (k, json!(v))).collect();

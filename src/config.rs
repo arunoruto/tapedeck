@@ -38,6 +38,30 @@ pub struct Config {
     /// Song requests over Telegram; off unless a token is set.
     #[serde(default)]
     pub telegram: Telegram,
+    /// The daemon's HTTP API for `td` on other machines; off unless `listen` is set.
+    #[serde(default)]
+    pub server: Server,
+    /// Use another machine's daemon instead of a local database and socket.
+    #[serde(default)]
+    pub remote: Remote,
+}
+
+#[derive(Deserialize, Clone, Debug, Default)]
+#[serde(deny_unknown_fields)]
+pub struct Server {
+    /// `host:port`, e.g. a Tailscale address. Nothing is served without it.
+    pub listen: Option<String>,
+    pub token: Option<String>,
+    pub token_file: Option<PathBuf>,
+}
+
+#[derive(Deserialize, Clone, Debug, Default)]
+#[serde(deny_unknown_fields)]
+pub struct Remote {
+    /// `http://host:port` of a daemon with `[server]` set.
+    pub url: Option<String>,
+    pub token: Option<String>,
+    pub token_file: Option<PathBuf>,
 }
 
 #[derive(Deserialize, Clone, Debug, Default)]
@@ -204,6 +228,12 @@ impl Config {
     pub fn parse(text: &str) -> Result<Self> {
         let cfg: Config = toml::from_str(text).context("parsing config")?;
         crate::library::validate_template(&cfg.path_template)?;
+        if cfg.server.listen.is_some() && cfg.server.token.is_none() && cfg.server.token_file.is_none() {
+            bail!("[server] listen needs token or token_file");
+        }
+        if cfg.remote.url.is_some() && cfg.remote.token.is_none() && cfg.remote.token_file.is_none() {
+            bail!("[remote] url needs token or token_file");
+        }
         if !matches!(cfg.external.prefer_external.as_str(), "auto" | "ask" | "never") {
             bail!("external.prefer_external must be auto, ask or never");
         }
@@ -230,6 +260,8 @@ impl Config {
     pub fn resolve_secrets(&mut self) -> Result<()> {
         read_token(&mut self.listenbrainz.token, &self.listenbrainz.token_file, "[listenbrainz]")?;
         read_token(&mut self.telegram.token, &self.telegram.token_file, "[telegram]")?;
+        read_token(&mut self.server.token, &self.server.token_file, "[server]")?;
+        read_token(&mut self.remote.token, &self.remote.token_file, "[remote]")?;
         if let Some(p) = &mut self.sync.plex {
             read_token(&mut p.token, &p.token_file, "[sync.plex]")?;
         }

@@ -2,7 +2,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, Row, params};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 pub struct Db(Connection);
 
@@ -30,7 +30,7 @@ pub struct ExternalFile {
     pub duration_ms: Option<i64>,
 }
 
-#[derive(Serialize, Clone, Debug, Default)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct Track {
     pub id: i64,
     pub recording_mbid: String,
@@ -51,7 +51,7 @@ pub struct Track {
     pub duration_ms: Option<i64>,
 }
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Playlist {
     pub id: i64,
     pub lb_mbid: String,
@@ -65,7 +65,7 @@ pub struct Playlist {
     pub synced: Vec<SyncRecord>,
 }
 
-#[derive(Serialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct SyncRecord {
     pub target: String,
     pub remote_id: Option<String>,

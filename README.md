@@ -79,6 +79,8 @@ binary is called `td`.
   MusicBrainz recording and checked again after the download, so you get the album audio
   rather than the music video with the two-minute intro.
 - **Plex sync** that scans the library, matches files and recreates the playlist.
+- **Use it from your laptop**: the daemon serves its commands and the audio over HTTP behind a
+  token, so `td tui` on another machine browses and controls the NAS.
 - **Song requests from Telegram**: send a link or "Artist - Title", get the proper recording
   filed and a yearly Requests playlist on Plex; it asks only when it is not sure.
 - **Other libraries respected**: point it at Lidarr's folder and a recording that exists there

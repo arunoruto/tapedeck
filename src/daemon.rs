@@ -35,6 +35,11 @@ pub async fn forward(stream: UnixStream, cmd: Command, tx: mpsc::Sender<Event>) 
 /// Run a command through the daemon when its socket is live, else in-process. Events go to `tx`;
 /// failures inside the command arrive as `Event::Error`, the `Err` here is only for plumbing.
 pub async fn dispatch(cfg: &Config, cmd: Command, tx: mpsc::Sender<Event>) -> Result<()> {
+    if cfg.remote.url.is_some() {
+        let mut cfg = cfg.clone();
+        cfg.resolve_secrets()?;
+        return crate::api::forward_remote(&cfg, cmd, tx).await;
+    }
     match connect(cfg).await {
         Some(stream) => forward(stream, cmd, tx).await,
         None => {
@@ -97,6 +102,16 @@ pub async fn serve(cfg: Config) -> Result<()> {
                 while let Some(ev) = rx.recv().await {
                     log_event(&ev);
                 }
+            }
+        });
+    }
+
+    if let Some(listen) = app.config.server.listen.clone() {
+        let token = app.config.server.token.clone().context("[server] token")?;
+        let api_app = app.clone();
+        tokio::spawn(async move {
+            if let Err(e) = crate::api::serve(api_app, &listen, token).await {
+                tracing::error!("api stopped: {e:#}");
             }
         });
     }

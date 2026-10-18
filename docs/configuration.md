@@ -216,6 +216,34 @@ week rather than piling up. The m3u8 on disk (`playlists/weekly-jams.m3u8`) foll
 rule; the week it replaces is kept under `playlists/archive/weekly-jams/2026-w41.m3u8`. Tracks
 that leave a playlist stay in the library.
 
+## Remote use: `[server]` and `[remote]`
+
+The daemon can serve the same commands it takes on its socket over HTTP, so `td` and `td tui`
+on a laptop can talk to the NAS. On the daemon:
+
+```toml
+[server]
+listen = "100.64.0.5:7878"        # a Tailscale or LAN address; nothing is served without it
+token_file = "/run/secrets/tapedeck/api-token"
+```
+
+On the laptop:
+
+```toml
+library = "/unused"               # still required; not touched in remote mode
+[listenbrainz]
+user = "you"
+[remote]
+url = "http://100.64.0.5:7878"
+token_file = "/home/you/.config/tapedeck/api-token"
+```
+
+With `[remote] url` set, every command and the TUI's data go to that daemon; no local database
+or socket is used. The API is `POST /cmd` (a `Command` as JSON in, `Event`s as NDJSON out, the
+socket protocol) and `GET /stream/<track id>` (the track's file with Range support, own and
+external files alike), all behind `Authorization: Bearer <token>`. Open the port only on a
+network you trust; there is no TLS, which is what Tailscale is for.
+
 ## Song requests (Telegram)
 
 Songs you hear elsewhere can be sent to tapedeck as a link or as "Artist - Title", from a

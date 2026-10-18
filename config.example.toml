@@ -45,3 +45,11 @@ section = "Music"
 # [telegram]                                        # song requests from a Telegram chat
 # token_file = "/run/secrets/tapedeck/telegram-token"
 # allowed_users = [123456789]
+
+# [server]                                          # HTTP API for td on other machines
+# listen = "100.64.0.5:7878"
+# token_file = "/run/secrets/tapedeck/api-token"
+
+# [remote]                                          # on a laptop: use that daemon instead of a local database
+# url = "http://100.64.0.5:7878"
+# token_file = "/home/you/.config/tapedeck/api-token"

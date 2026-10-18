@@ -42,6 +42,15 @@ pub enum Command {
     },
     /// Library counts by track status.
     Status,
+    /// Every track, as JSON rows (what the TUI loads).
+    #[command(hide = true)]
+    Tracks,
+    /// Tracks of one playlist, in order.
+    #[command(hide = true)]
+    PlaylistTracks { playlist: i64 },
+    /// Playlists on the sync targets, as JSON rows.
+    #[command(hide = true)]
+    RemotePlaylists,
     /// Search tracks by artist, album or title.
     Search { query: String },
     /// Playlists and where they have been synced.
