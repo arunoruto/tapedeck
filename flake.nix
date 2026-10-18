@@ -15,10 +15,39 @@
       forAll = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
     in
     {
-      packages = forAll (pkgs: rec {
+      packages = forAll (pkgs: let
         tapedeck-unwrapped = pkgs.callPackage ./nix/package.nix { };
         tapedeck = pkgs.callPackage ./nix/wrapper.nix { inherit tapedeck-unwrapped; };
+      in {
+        inherit tapedeck-unwrapped tapedeck;
         default = tapedeck;
+      } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+        # OCI image for docker/podman, pushed to ghcr.io/arunoruto/tapedeck by the Container
+        # workflow. `td daemon` by default; mount the config at /config/config.toml, state goes
+        # to /data, the library wherever the config says (/music by convention).
+        container = pkgs.dockerTools.buildLayeredImage {
+          name = "ghcr.io/arunoruto/tapedeck";
+          tag = tapedeck.version;
+          created = "now";
+          contents = [ tapedeck pkgs.cacert ];
+          extraCommands = "mkdir -m 1777 tmp";
+          config = {
+            Entrypoint = [ "/bin/td" ];
+            Cmd = [ "daemon" ];
+            Env = [
+              "TAPEDECK_CONFIG=/config/config.toml"
+              "XDG_DATA_HOME=/data"
+              "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
+            ];
+            ExposedPorts."7878/tcp" = { };
+            Volumes = { "/config" = { }; "/data" = { }; "/music" = { }; };
+            Labels = {
+              "org.opencontainers.image.source" = "https://github.com/arunoruto/tapedeck";
+              "org.opencontainers.image.description" = "ListenBrainz playlists → downloaded, tagged library → Plex";
+              "org.opencontainers.image.licenses" = "MIT";
+            };
+          };
+        };
       });
 
       overlays.default = final: _prev: {

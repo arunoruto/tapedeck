@@ -1,0 +1,60 @@
+name: Container
+
+# A release tag (v*) publishes ghcr.io/arunoruto/tapedeck:<version> and moves :latest to it.
+# A manual run publishes :sha-<short sha> only, so :latest always points at a release.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
+jobs:
+  build:
+    name: ${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,    arch: amd64 }
+          - { os: ubuntu-24.04-arm, arch: arm64 }
+    steps:
+      - uses: actions/checkout@v5
+      - name: Tag must match Cargo.toml version
+        if: github.ref_type == 'tag'
+        run: grep -q "^version = \"${GITHUB_REF_NAME#v}\"" Cargo.toml
+      - uses: cachix/install-nix-action@v31
+      - uses: cachix/cachix-action@v16
+        with:
+          name: arunoruto
+          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
+      - run: nix build -L .#container
+      - name: Push ${{ matrix.arch }} image
+        run: |
+          tag=$([[ $GITHUB_REF_TYPE == tag ]] && echo "${GITHUB_REF_NAME#v}" || echo "sha-${GITHUB_SHA::7}")
+          echo "${{ secrets.GITHUB_TOKEN }}" | skopeo login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          skopeo copy "docker-archive:$(readlink -f result)" "docker://$IMAGE:$tag-${{ matrix.arch }}"
+
+  manifest:
+    name: multi-arch manifest
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assemble and push
+        run: |
+          if [[ $GITHUB_REF_TYPE == tag ]]; then
+            tag=${GITHUB_REF_NAME#v}; tags="$tag latest"
+          else
+            tag=sha-${GITHUB_SHA::7}; tags="$tag"
+          fi
+          echo "${{ secrets.GITHUB_TOKEN }}" | podman login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          for t in $tags; do
+            podman manifest create "$IMAGE:$t" "docker://$IMAGE:$tag-amd64" "docker://$IMAGE:$tag-arm64"
+            podman manifest push --all "$IMAGE:$t" "docker://$IMAGE:$t"
+          done

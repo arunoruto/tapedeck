@@ -137,6 +137,13 @@ nix run github:arunoruto/tapedeck -- --help
 cargo install --git https://github.com/arunoruto/tapedeck
 ```
 
+**Container** (amd64 and arm64; `latest` is always the newest release, see
+[the docs](https://arunoruto.github.io/tapedeck/installation.html#container)):
+
+```sh
+docker run -d -v ./config:/config -v ./data:/data -v /srv/music:/music -p 7878:7878 ghcr.io/arunoruto/tapedeck:latest
+```
+
 ### First sync
 
 ```sh

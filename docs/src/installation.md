@@ -32,6 +32,29 @@ cargo install --git https://github.com/arunoruto/tapedeck
 ```
 
 
+## Container
+
+Images for amd64 and arm64 are on the GitHub registry, built from the same Nix package as
+the flake (`td`, yt-dlp, ffmpeg, no mpv). `latest` always points at the newest release;
+each release is also tagged with its version (`0.1.0`), and manual builds from main appear
+as `sha-<short sha>` only, so `latest` never moves to an untested commit.
+
+```sh
+mkdir -p tapedeck/config tapedeck/data
+cp config.example.toml tapedeck/config/config.toml   # set library = "/music" and your ListenBrainz user
+docker run -d --name tapedeck \
+  -v ./tapedeck/config:/config -v ./tapedeck/data:/data -v /srv/music:/music \
+  -p 7878:7878 ghcr.io/arunoruto/tapedeck:latest
+docker exec -it tapedeck td status        # any command goes through the daemon's socket
+```
+
+The image runs `td daemon` with `TAPEDECK_CONFIG=/config/config.toml`; the database and the
+socket live under `/data`, themes under `/config/themes`. Set `server.listen = "0.0.0.0:7878"`
+to use the [HTTP API](remote.md) from outside. The container runs as root unless you pass
+`--user <uid>:<gid>` matching the owner of the library; a `token_file` can be any path you
+mount read-only.
+
+
 ## NixOS
 
 On a server tapedeck should run like Plex or Lidarr do: as its own system user from boot,
