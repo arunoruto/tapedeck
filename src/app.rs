@@ -12,10 +12,11 @@ use serde_json::{Value, json};
 use tokio::sync::mpsc::Sender;
 
 use crate::{
-    cli::{Command, RemoteCmd},
+    cli::{Command, ExternalCmd, RemoteCmd},
     config::Config,
     db::{Db, NewTrack, Playlist, Track},
     download::{self, Downloader},
+    external::{find_external, is_external, present},
     library, listenbrainz, m3u,
     musicbrainz::{MusicBrainz, Recording},
     sync::{self, RemotePlaylist, SyncTarget, glob_match},
@@ -97,7 +98,20 @@ impl App {
                 for (path, n) in &shared {
                     info(tx, format!("warning: {n} tracks share one file: {path}")).await?;
                 }
-                data(tx, json!({ "tracks": counts, "playlists": playlists, "shared_paths": shared.len() })).await
+                // Two statements: two guards in one expression would deadlock the std Mutex.
+                let external_files = self.db().external_count()?;
+                let scanned = self.db().meta_get("external_scanned_at")?;
+                data(
+                    tx,
+                    json!({
+                        "tracks": counts,
+                        "playlists": playlists,
+                        "shared_paths": shared.len(),
+                        "external_files": external_files,
+                        "external_scanned_at": scanned,
+                    }),
+                )
+                .await
             }
             // Bind before awaiting: the DB guard must not live across an await point.
             Command::Search { query } => {
@@ -201,7 +215,9 @@ impl App {
             }
             Command::Retry { track: Some(id) } => {
                 let t = self.db().track_by_id(id)?.with_context(|| format!("no track with id {id}"))?;
-                if let Some(rel) = &t.path {
+                if let Some(rel) = &t.path
+                    && !is_external(&t)
+                {
                     library::remove_track(&self.config.library, Path::new(rel))?;
                 }
                 self.db().reset_track(id)?;
@@ -211,7 +227,9 @@ impl App {
                 let t = self.db().track_by_id(track)?.with_context(|| format!("no track with id {track}"))?;
                 let playlists = self.db().playlists_with_track(track)?;
                 if let Some(rel) = &t.path {
-                    if self.db().tracks_with_path(rel)?.len() > 1 {
+                    if is_external(&t) {
+                        info(tx, format!("{rel} belongs to an external library and stays")).await?;
+                    } else if self.db().tracks_with_path(rel)?.len() > 1 {
                         info(tx, format!("another track still uses {rel}; the file stays")).await?;
                     } else {
                         let refs = backup_references(
@@ -235,6 +253,10 @@ impl App {
             Command::Retag { track, recording } => {
                 let cfg = &self.config;
                 let t = self.db().track_by_id(track)?.with_context(|| format!("no track with id {track}"))?;
+                ensure!(
+                    !is_external(&t),
+                    "track {track} is a file in an external library; tapedeck doesn't retag those"
+                );
                 let mbid = recording.trim().to_lowercase();
                 ensure!(library::is_uuid(&mbid), "{recording:?} is not a MusicBrainz id");
                 if let Some(other) = self.db().track_by_mbid(&mbid)?
@@ -266,6 +288,15 @@ impl App {
             }
             Command::Refile { dry_run } => self.refile(dry_run, tx).await,
             Command::Remote { action } => self.remote(action, tx).await,
+            Command::External { action: ExternalCmd::Scan } => {
+                ensure!(!self.config.external.paths.is_empty(), "no external.paths configured");
+                let report = self.external_scan(tx).await?;
+                data(tx, json!(report)).await
+            }
+            Command::External { action: ExternalCmd::Dedupe { dry_run } } => {
+                ensure!(!self.config.external.paths.is_empty(), "no external.paths configured");
+                self.external_dedupe(dry_run, tx).await
+            }
             Command::Import { dir, apply, r#move, copy: _, delete_duplicates } => {
                 self.import(&dir, apply, !r#move, delete_duplicates, tx).await
             }
@@ -276,7 +307,7 @@ impl App {
     /// move files whose templated path changed.
     async fn refile(&self, dry_run: bool, tx: &Sender<Event>) -> Result<()> {
         let cfg = &self.config;
-        let tracks = self.db().all_tracks()?;
+        let tracks: Vec<Track> = self.db().all_tracks()?.into_iter().filter(|t| !is_external(t)).collect();
         let total = tracks.len();
         let (mut moved, mut retagged, mut failed) = (0, 0, 0);
         let mut moves: HashMap<PathBuf, PathBuf> = HashMap::new();
@@ -600,10 +631,22 @@ impl App {
         // recording's length is filed and the others are duplicates.
         let (mut imported, mut duplicates, mut failed) = (0, 0, 0);
         let mut moved: HashMap<PathBuf, PathBuf> = HashMap::new();
+        let external = self.db().external_all()?;
         for (mut mbid, files) in groups {
+            // A recording Lidarr already has is not imported; its copies point there in the backups.
+            if let Some(e) = external.iter().find(|e| e.recording_mbid.as_deref() == Some(mbid.as_str())) {
+                for f in &files {
+                    duplicates += 1;
+                    if apply {
+                        moved.insert(f.path.clone(), PathBuf::from(&e.path));
+                    }
+                    info(tx, format!("duplicate of external {}: {}", e.path, f.path.display())).await?;
+                }
+                continue;
+            }
             let mut existing = self.db().track_by_mbid(&mbid)?;
             let (kept, label, dest) = match existing {
-                Some(t) if t.status == "ready" => {
+                Some(t) if present(&t) => {
                     (None, format!("{} - {}", t.artist, t.title), t.path.map(|p| cfg.library.join(p)))
                 }
                 _ => {
@@ -677,7 +720,7 @@ impl App {
                         }
                         // The re-resolved recording may already be in the library.
                         if let Some(t) = &existing
-                            && t.status == "ready"
+                            && present(t)
                         {
                             let label = format!("{} - {}", t.artist, t.title);
                             let dest = t.path.clone().map(|p| cfg.library.join(p));
@@ -1061,7 +1104,7 @@ impl App {
     }
 
     /// Point playlist backups at files that just moved, whoever moved them.
-    async fn follow_moves(&self, moves: &HashMap<PathBuf, PathBuf>, tx: &Sender<Event>) -> Result<()> {
+    pub(crate) async fn follow_moves(&self, moves: &HashMap<PathBuf, PathBuf>, tx: &Sender<Event>) -> Result<()> {
         if moves.is_empty() {
             return Ok(());
         }
@@ -1073,7 +1116,7 @@ impl App {
     }
 
     /// Rewrite the m3u8 of every playlist (or of `only` those ids) at its stored path.
-    fn rewrite_m3us(&self, only: Option<&[i64]>) -> Result<()> {
+    pub(crate) fn rewrite_m3us(&self, only: Option<&[i64]>) -> Result<()> {
         let playlists = self.db().playlists()?;
         for p in playlists.iter().filter(|p| only.is_none_or(|ids| ids.contains(&p.id))) {
             let Some(m3u) = p.m3u_path.as_deref().map(Path::new) else { continue };
@@ -1134,11 +1177,21 @@ impl App {
         }
 
         // 2. Download whatever is still wanted, tag it, file it.
+        // External libraries first: what Lidarr has is not downloaded.
+        self.external_scan(tx).await?;
+        let external = self.db().external_all()?;
         let wanted = self.db().wanted_tracks()?;
         info(tx, format!("{} tracks to download", wanted.len())).await?;
-        let (mut done, mut failed) = (0, 0);
+        let (mut done, mut failed, mut from_external) = (0, 0, 0);
         let mut done_ids = vec![];
         for t in &wanted {
+            if let Some(e) = find_external(&external, t) {
+                info(tx, format!("external: {} - {} ← {}", t.artist, t.title, e.path)).await?;
+                self.db().mark_external(t.id, &e.path)?;
+                from_external += 1;
+                done_ids.push(t.id);
+                continue;
+            }
             info(tx, format!("downloading {} - {}", t.artist, t.title)).await?;
             let result = async {
                 let got = self.downloader.download(t, &cfg.tmp_dir()).await?;
@@ -1197,12 +1250,13 @@ impl App {
                 self.push(cur, None, tx).await?;
             }
         }
-        info(tx, format!("{done} downloaded, {failed} failed")).await?;
+        let ext = if from_external > 0 { format!(", {from_external} from external libraries") } else { String::new() };
+        info(tx, format!("{done} downloaded{ext}, {failed} failed")).await?;
         ensure!(failed == 0, "{failed} downloads failed; `td retry` queues them again, `td source` pins a URL");
         Ok(())
     }
 
-    async fn push(&self, p: &Playlist, only: Option<&str>, tx: &Sender<Event>) -> Result<()> {
+    pub(crate) async fn push(&self, p: &Playlist, only: Option<&str>, tx: &Sender<Event>) -> Result<()> {
         let files: Vec<PathBuf> = self
             .db()
             .playlist_tracks(p.id)?
@@ -1296,13 +1350,13 @@ impl App {
             .unwrap_or_else(|| file.file_stem().unwrap_or_default().to_string_lossy().into_owned()))
     }
 
-    fn db(&self) -> std::sync::MutexGuard<'_, Db> {
+    pub(crate) fn db(&self) -> std::sync::MutexGuard<'_, Db> {
         self.db.lock().unwrap_or_else(|p| p.into_inner())
     }
 }
 
 /// What two copies of one song look like from their tags or file names.
-fn name_key(f: &library::Found) -> (String, String) {
+pub(crate) fn name_key(f: &library::Found) -> (String, String) {
     (f.artist.to_lowercase(), crate::musicbrainz::strip_feat(&f.title).to_lowercase())
 }
 
@@ -1446,7 +1500,7 @@ fn display_name(kind: &str) -> String {
         .join(" ")
 }
 
-async fn info(tx: &Sender<Event>, msg: String) -> Result<()> {
+pub(crate) async fn info(tx: &Sender<Event>, msg: String) -> Result<()> {
     tx.send(Event::Info { msg }).await.context("client went away")
 }
 

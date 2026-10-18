@@ -940,6 +940,7 @@ impl Tui {
         let th = &self.theme;
         let colour = match status {
             "ready" => th.ready,
+            "external" => th.title,
             "failed" => th.failed,
             _ => th.wanted,
         };

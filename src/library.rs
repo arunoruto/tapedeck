@@ -243,6 +243,38 @@ pub struct Found {
     pub duration_ms: Option<i64>,
 }
 
+/// Audio files under `dir` with size and mtime, no tag reading: the cheap pass an incremental
+/// index needs. macOS resource forks ("._x.flac") and unreadable entries are skipped.
+pub fn walk(dir: &Path) -> Vec<(PathBuf, i64, i64)> {
+    let mut out = vec![];
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else { continue };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if p.is_dir() {
+                stack.push(p);
+            } else if !name.starts_with("._")
+                && p.extension()
+                    .and_then(|e| e.to_str())
+                    .is_some_and(|e| AUDIO_EXT.contains(&e.to_lowercase().as_str()))
+                && let Ok(meta) = entry.metadata()
+            {
+                let mtime = meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                out.push((p, meta.len() as i64, mtime));
+            }
+        }
+    }
+    out.sort();
+    out
+}
+
 /// Recursively list audio files under `dir`, reading tags where present.
 pub fn scan(dir: &Path) -> Result<Vec<Found>> {
     let mut out = vec![];

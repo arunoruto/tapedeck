@@ -74,15 +74,32 @@ pub async fn serve(cfg: Config) -> Result<()> {
                 async move { a.run(Command::Sync { playlist: None, no_push: false, no_fetch: false }, tx).await },
             );
             while let Some(ev) = rx.recv().await {
-                match ev {
-                    Event::Error { msg } => tracing::error!("{msg}"),
-                    Event::Info { msg } => tracing::info!("{msg}"),
-                    Event::Data { .. } | Event::Progress { .. } => {}
-                }
+                log_event(&ev);
             }
             tokio::time::sleep(interval).await;
         }
     });
+
+    // Periodic external-library scan, on its own clock, so a Lidarr change is noticed between syncs.
+    if let Ok(every) = app.config.external_scan_interval()
+        && !every.is_zero()
+        && !app.config.external.paths.is_empty()
+    {
+        let scanner = app.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(every).await;
+                let (tx, mut rx) = mpsc::channel(64);
+                let a = scanner.clone();
+                tokio::spawn(
+                    async move { a.run(Command::External { action: crate::cli::ExternalCmd::Scan }, tx).await },
+                );
+                while let Some(ev) = rx.recv().await {
+                    log_event(&ev);
+                }
+            }
+        });
+    }
 
     loop {
         let (stream, _) = listener.accept().await?;
@@ -103,7 +120,17 @@ async fn handle(app: Arc<App>, stream: UnixStream) -> Result<()> {
     let (tx, mut rx) = mpsc::channel(64);
     tokio::spawn(async move { app.run(cmd, tx).await });
     while let Some(ev) = rx.recv().await {
+        // The client sees everything; the journal keeps the trace of what was done through the socket.
+        log_event(&ev);
         wr.write_all(format!("{}\n", serde_json::to_string(&ev)?).as_bytes()).await?;
     }
     Ok(())
+}
+
+fn log_event(ev: &Event) {
+    match ev {
+        Event::Error { msg } => tracing::error!("{msg}"),
+        Event::Info { msg } => tracing::info!("{msg}"),
+        Event::Data { .. } | Event::Progress { .. } => {}
+    }
 }

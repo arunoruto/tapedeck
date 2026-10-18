@@ -63,3 +63,22 @@ CREATE TABLE IF NOT EXISTS import_lookups (
     mtime          INTEGER NOT NULL,
     recording_mbid TEXT NOT NULL
 );
+
+-- Files in read-only external libraries (Lidarr), indexed so their recordings are never
+-- downloaded or kept twice. Rescanned incrementally by (path, size, mtime).
+CREATE TABLE IF NOT EXISTS external_files (
+    path           TEXT PRIMARY KEY,
+    root           TEXT NOT NULL,
+    size           INTEGER NOT NULL,
+    mtime          INTEGER NOT NULL,
+    recording_mbid TEXT,
+    artist         TEXT NOT NULL,
+    title          TEXT NOT NULL,
+    duration_ms    INTEGER
+);
+CREATE INDEX IF NOT EXISTS external_files_mbid ON external_files(recording_mbid);
+
+CREATE TABLE IF NOT EXISTS meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);

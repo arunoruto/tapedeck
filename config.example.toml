@@ -36,3 +36,8 @@ token = "your-plex-token"
 section = "Music"
 # How Plex sees the library if it runs in a container or on another host:
 # path_map = { "/srv/music" = "/music" }
+
+# [external]                                        # read-only libraries (Lidarr); recordings found there are never downloaded
+# paths = ["/srv/music/releases"]
+# scan_interval = "1h"                              # daemon rescans on its own clock; "0" = only at sync
+# prefer_external = "ask"                           # auto: replace own copies; ask: report them; never

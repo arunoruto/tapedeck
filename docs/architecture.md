@@ -18,6 +18,7 @@ src/
   sync/            SyncTarget trait, Plex implementation
   tui.rs           `td tui` / plain `td`: ratatui browser; actions reuse the CLI commands
   theme.rs         TUI colours from TOML; built-ins in themes/
+  external.rs      read-only external libraries (Lidarr): index, dedupe, reconcile
   render.rs        tables / key-value lines for human output
 ```
 
@@ -168,10 +169,26 @@ Long loops (import's resolving pass, refile) report a `progress` event per item.
 it overwrites itself on one line; in a pipe or the journal it is dropped; with `--json` it is one
 more NDJSON line, so a script can show its own counter.
 
+## External libraries
+
+`external.rs`. Folders someone else manages (Lidarr) are indexed into `external_files` by
+recording id, artist, title and length, incrementally by size and mtime, with a one-minute
+settle time for files still being written. The index is consulted wherever a recording would
+otherwise be fetched or kept: the sync marks a wanted track `external` (status `external`,
+`path` absolute) instead of downloading, import treats the recording as a duplicate, and
+`td external dedupe` swaps an own copy for the external one. A scan also reconciles: a vanished
+file sends its tracks to another external copy or back to `wanted`, a new file covers wanted
+and failed tracks at once and own copies according to `prefer_external`, and playlists whose
+paths changed are pushed again. The daemon scans on `external.scan_interval` and at every sync.
+Everything that writes files (refile, retag, retry, rm) checks `is_external` first and leaves
+those alone; m3u8 and Plex see the external path like any other.
+
 ## Running as a service
 
-The daemon is one process: a Unix socket for commands and a ticker that runs `sync` every
-`sync.interval` (immediately on start unless `sync.on_start = false`). Two modules wrap it.
+The daemon is one process: a Unix socket for commands, a ticker that runs `sync` every
+`sync.interval` (immediately on start unless `sync.on_start = false`), and a second ticker for
+the external-library scan. Events of socket-driven commands are logged to the journal too, so
+a sync started from the TUI is traceable afterwards. Two modules wrap it.
 The Home Manager one is a user unit for a desktop. The NixOS one is for a server: its own
 system user and group, `StateDirectory`/`RuntimeDirectory` with mode 0770 and `UMask=0002` so
 group members can use the CLI and TUI against the running daemon and the files it writes are
@@ -217,7 +234,8 @@ artists         id, mbid, name, folder
 albums          id, mbid, artist_id, title, year
 tracks          id, recording_mbid, album_id, title, artist, artist_mbid, track_no, duration_ms,
                 path, status, source_url, error
-playlists       id, lb_mbid, name, kind, m3u_path, fetched_at
+playlists       id, lb_mbid, name, kind, m3u_path, date, fetched_at
+external_files  path, root, size, mtime, recording_mbid, artist, title, duration_ms
 playlist_tracks playlist_id, track_id, position
 playlist_syncs  playlist_id, target, remote_id, synced_at
 ```

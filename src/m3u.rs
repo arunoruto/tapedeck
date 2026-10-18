@@ -10,7 +10,7 @@ use crate::db::Track;
 pub fn write(playlist_dir: &Path, library: &Path, stem: &str, title: &str, tracks: &[Track]) -> Result<PathBuf> {
     std::fs::create_dir_all(playlist_dir)?;
     let mut body = format!("#EXTM3U\n#PLAYLIST:{title}\n");
-    for t in tracks.iter().filter(|t| t.status == "ready") {
+    for t in tracks.iter().filter(|t| crate::external::present(t)) {
         let Some(rel) = &t.path else { continue };
         let entry = relative_to(playlist_dir, &library.join(rel));
         let secs = t.duration_ms.map(|ms| (ms + 500) / 1000).unwrap_or(-1);

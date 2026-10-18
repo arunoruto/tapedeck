@@ -105,6 +105,11 @@ pub enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Read-only libraries managed elsewhere (Lidarr): index them, replace own copies.
+    External {
+        #[command(subcommand)]
+        action: ExternalCmd,
+    },
     /// Playlists that live on a sync target (list, bulk delete).
     Remote {
         #[command(subcommand)]
@@ -128,6 +133,19 @@ pub enum Command {
         /// With --move: delete source files whose recording is already in the library.
         #[arg(long, requires = "move")]
         delete_duplicates: bool,
+    },
+}
+
+#[derive(Subcommand, Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "op", rename_all = "snake_case")]
+pub enum ExternalCmd {
+    /// Index the external paths now (the daemon does this on its own interval and every sync).
+    Scan,
+    /// Replace own tracks that also exist externally with the external file; the own file is deleted.
+    Dedupe {
+        /// Report what would change without touching anything.
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 

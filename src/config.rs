@@ -33,6 +33,37 @@ pub struct Config {
     pub download: Download,
     #[serde(default)]
     pub sync: Sync,
+    #[serde(default)]
+    pub external: External,
+}
+
+/// Read-only libraries managed by something else (Lidarr). Recordings found there are never
+/// downloaded or kept twice; nothing under these paths is ever written.
+#[derive(Deserialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct External {
+    #[serde(default)]
+    pub paths: Vec<PathBuf>,
+    /// How often the daemon rescans them; "0" turns the periodic scan off (sync still scans).
+    #[serde(default = "default_scan_interval")]
+    pub scan_interval: String,
+    /// When an external copy of an own track appears: "auto" repoints and deletes the own file,
+    /// "ask" only reports it (`td external dedupe` acts), "never" ignores it.
+    #[serde(default = "default_prefer_external")]
+    pub prefer_external: String,
+}
+
+impl Default for External {
+    fn default() -> Self {
+        Self { paths: vec![], scan_interval: default_scan_interval(), prefer_external: default_prefer_external() }
+    }
+}
+
+fn default_scan_interval() -> String {
+    "1h".into()
+}
+fn default_prefer_external() -> String {
+    "ask".into()
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -160,6 +191,10 @@ impl Config {
     pub fn parse(text: &str) -> Result<Self> {
         let cfg: Config = toml::from_str(text).context("parsing config")?;
         crate::library::validate_template(&cfg.path_template)?;
+        if !matches!(cfg.external.prefer_external.as_str(), "auto" | "ask" | "never") {
+            bail!("external.prefer_external must be auto, ask or never");
+        }
+        parse_duration(&cfg.external.scan_interval, "external.scan_interval")?;
         for t in &cfg.sync.targets {
             if t == "plex" && cfg.sync.plex.is_none() {
                 bail!("sync.targets lists plex but [sync.plex] is missing");
@@ -212,18 +247,31 @@ impl Config {
     }
 
     pub fn sync_interval(&self) -> Result<Duration> {
-        let s = self.sync.interval.trim();
-        let (num, unit) = s.split_at(s.len().saturating_sub(1));
-        let n: u64 = num.parse().with_context(|| format!("bad sync.interval {s:?}, want e.g. 6h or 30m"))?;
-        let mult = match unit {
-            "s" => 1,
-            "m" => 60,
-            "h" => 3600,
-            "d" => 86400,
-            _ => bail!("bad sync.interval unit in {s:?}"),
-        };
-        Ok(Duration::from_secs(n * mult))
+        parse_duration(&self.sync.interval, "sync.interval")
     }
+
+    /// Zero means no periodic scan.
+    pub fn external_scan_interval(&self) -> Result<Duration> {
+        parse_duration(&self.external.scan_interval, "external.scan_interval")
+    }
+}
+
+/// "6h", "30m", "90s", "1d"; a bare "0" is allowed and means off.
+fn parse_duration(value: &str, key: &str) -> Result<Duration> {
+    let s = value.trim();
+    if s == "0" {
+        return Ok(Duration::ZERO);
+    }
+    let (num, unit) = s.split_at(s.len().saturating_sub(1));
+    let n: u64 = num.parse().with_context(|| format!("bad {key} {s:?}, want e.g. 6h or 30m"))?;
+    let mult = match unit {
+        "s" => 1,
+        "m" => 60,
+        "h" => 3600,
+        "d" => 86400,
+        _ => bail!("bad {key} unit in {s:?}"),
+    };
+    Ok(Duration::from_secs(n * mult))
 }
 
 fn read_token(token: &mut Option<String>, file: &Option<PathBuf>, section: &str) -> Result<()> {

@@ -17,6 +17,19 @@ pub struct Artist {
     pub tracks: i64,
 }
 
+/// A file in a read-only external library.
+#[derive(Serialize, Clone, Debug)]
+pub struct ExternalFile {
+    pub path: String,
+    pub root: String,
+    pub size: i64,
+    pub mtime: i64,
+    pub recording_mbid: Option<String>,
+    pub artist: String,
+    pub title: String,
+    pub duration_ms: Option<i64>,
+}
+
 #[derive(Serialize, Clone, Debug, Default)]
 pub struct Track {
     pub id: i64,
@@ -80,6 +93,22 @@ const TRACK_SELECT: &str = "
     FROM tracks t
     JOIN albums al ON al.id = t.album_id
     JOIN artists ar ON ar.id = al.artist_id";
+
+const EXTERNAL_SELECT: &str =
+    "SELECT path, root, size, mtime, recording_mbid, artist, title, duration_ms FROM external_files";
+
+fn external_row(r: &Row) -> rusqlite::Result<ExternalFile> {
+    Ok(ExternalFile {
+        path: r.get(0)?,
+        root: r.get(1)?,
+        size: r.get(2)?,
+        mtime: r.get(3)?,
+        recording_mbid: r.get(4)?,
+        artist: r.get(5)?,
+        title: r.get(6)?,
+        duration_ms: r.get(7)?,
+    })
+}
 
 fn track_row(r: &Row) -> rusqlite::Result<Track> {
     Ok(Track {
@@ -229,6 +258,66 @@ impl Db {
     /// Pin (or with `None` unpin) the folder name used for an artist instead of MusicBrainz's.
     pub fn set_artist_folder(&self, id: i64, folder: Option<&str>) -> Result<()> {
         self.0.execute("UPDATE artists SET folder = ?2 WHERE id = ?1", params![id, folder])?;
+        Ok(())
+    }
+
+    pub fn external_under(&self, root: &str) -> Result<Vec<ExternalFile>> {
+        let mut st = self.0.prepare(&format!("{EXTERNAL_SELECT} WHERE root = ?1"))?;
+        let rows = st.query_map([root], external_row)?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Every external file, lossless first, so a FLAC is preferred when a recording is there twice.
+    pub fn external_all(&self) -> Result<Vec<ExternalFile>> {
+        let mut st = self.0.prepare(&format!("{EXTERNAL_SELECT} ORDER BY (path LIKE '%.flac') DESC, path"))?;
+        let rows = st.query_map([], external_row)?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    pub fn external_count(&self) -> Result<i64> {
+        Ok(self.0.query_row("SELECT COUNT(*) FROM external_files", [], |r| r.get(0))?)
+    }
+
+    pub fn upsert_external(&self, e: &ExternalFile) -> Result<()> {
+        self.0.execute(
+            "INSERT INTO external_files (path, root, size, mtime, recording_mbid, artist, title, duration_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(path) DO UPDATE SET root = excluded.root, size = excluded.size, mtime = excluded.mtime,
+                 recording_mbid = excluded.recording_mbid, artist = excluded.artist, title = excluded.title,
+                 duration_ms = excluded.duration_ms",
+            params![e.path, e.root, e.size, e.mtime, e.recording_mbid, e.artist, e.title, e.duration_ms],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_external(&self, path: &str) -> Result<()> {
+        self.0.execute("DELETE FROM external_files WHERE path = ?1", [path])?;
+        Ok(())
+    }
+
+    /// Tracks pointing at this absolute path (external ones).
+    pub fn tracks_at_path(&self, path: &str) -> Result<Vec<Track>> {
+        self.query_tracks(&format!("{TRACK_SELECT} WHERE t.path = ?1 AND t.status = 'external'"), [path])
+    }
+
+    /// The track is served by an external file from now on; no download, no own file.
+    pub fn mark_external(&self, id: i64, abs_path: &str) -> Result<()> {
+        self.0.execute(
+            "UPDATE tracks SET status = 'external', path = ?2, source_url = NULL, error = NULL WHERE id = ?1",
+            params![id, abs_path],
+        )?;
+        Ok(())
+    }
+
+    pub fn meta_get(&self, key: &str) -> Result<Option<String>> {
+        Ok(self.0.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0)).optional()?)
+    }
+
+    pub fn meta_set(&self, key: &str, value: &str) -> Result<()> {
+        self.0.execute(
+            "INSERT INTO meta (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
         Ok(())
     }
 
