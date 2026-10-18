@@ -242,24 +242,76 @@ impl Default for Download {
     }
 }
 
+/// `TAPEDECK_<KEY>` and `TAPEDECK_<SECTION>__<KEY>` (one `__` per nesting level, any case) carry
+/// config keys, so a container can be configured, secrets included, without a file.
+fn is_env_key(name: &str) -> bool {
+    name.strip_prefix("TAPEDECK_").is_some_and(|rest| !rest.is_empty() && rest != "CONFIG")
+}
+
+/// Lay the `TAPEDECK_*` variables over the parsed file; the environment wins. `true`/`false`
+/// and values starting with `[`, `{` or `"` are read as TOML, everything else is a string, and
+/// an empty value removes the key (how to switch off a default the image sets).
+pub fn apply_env(table: &mut toml::Table, vars: impl Iterator<Item = (String, String)>) {
+    for (name, raw) in vars.filter(|(k, _)| is_env_key(k)) {
+        let path = &name["TAPEDECK_".len()..];
+        let (parents, last) = path.rsplit_once("__").unwrap_or(("", path));
+        let last = last.to_lowercase();
+        let mut node = &mut *table;
+        for key in parents.split("__").filter(|k| !k.is_empty()) {
+            let slot = node.entry(key.to_lowercase()).or_insert_with(|| toml::Value::Table(toml::Table::new()));
+            if !slot.is_table() {
+                *slot = toml::Value::Table(toml::Table::new());
+            }
+            node = slot.as_table_mut().expect("just made a table");
+        }
+        if raw.is_empty() {
+            node.remove(&last);
+        } else {
+            node.insert(last, env_value(&raw));
+        }
+    }
+}
+
+fn env_value(raw: &str) -> toml::Value {
+    let literal = matches!(raw, "true" | "false") || raw.starts_with(['[', '{', '"']);
+    literal
+        .then(|| toml::from_str::<toml::Table>(&format!("v = {raw}")).ok())
+        .flatten()
+        .and_then(|mut t| t.remove("v"))
+        .unwrap_or_else(|| toml::Value::String(raw.to_string()))
+}
+
 impl Config {
     pub fn load(path: Option<&Path>) -> Result<Self> {
         let path = match path {
             Some(p) => p.to_path_buf(),
             None => xdg("XDG_CONFIG_HOME", ".config").join("tapedeck/config.toml"),
         };
-        let text = std::fs::read_to_string(&path)
-            .with_context(|| format!("reading config {} (see config.example.toml)", path.display()))?;
-        let mut cfg = Self::parse(&text)?;
+        let mut table: toml::Table = match std::fs::read_to_string(&path) {
+            Ok(text) => toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?,
+            // No file is fine when the environment carries the config (containers).
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound && std::env::vars().any(|(k, _)| is_env_key(&k)) => {
+                toml::Table::new()
+            }
+            Err(e) => {
+                return Err(e).with_context(|| format!("reading config {} (see config.example.toml)", path.display()));
+            }
+        };
+        apply_env(&mut table, std::env::vars());
+        let mut cfg = Self::parse_table(table)?;
         cfg.config_dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
         // Secrets are read later, by whoever actually talks to a target (`resolve_secrets`):
         // a group member running `td status` against the daemon must not need the token file.
         Ok(cfg)
     }
 
-    /// Parse and validate, without touching the filesystem.
+    /// Parse and validate, without touching the filesystem or the environment.
     pub fn parse(text: &str) -> Result<Self> {
-        let cfg: Config = toml::from_str(text).context("parsing config")?;
+        Self::parse_table(toml::from_str(text).context("parsing config")?)
+    }
+
+    fn parse_table(table: toml::Table) -> Result<Self> {
+        let cfg: Config = table.try_into().context("parsing config")?;
         crate::library::validate_template(&cfg.path_template)?;
         for scope in &cfg.server.anonymous {
             if !matches!(scope.as_str(), "read" | "stream" | "listen" | "request" | "sync") {
@@ -382,6 +434,36 @@ mod tests {
         assert_eq!(cfg.sync_interval().unwrap(), Duration::from_secs(6 * 3600));
         assert_eq!(cfg.download.format, "opus");
         assert_eq!(cfg.sync.targets, ["plex"]);
+    }
+
+    #[test]
+    fn env_lays_over_the_file() {
+        let mut t: toml::Table =
+            toml::from_str("library = \"/m\"\nplaylist_dir = \"/p\"\n[listenbrainz]\nuser = \"u\"\n").unwrap();
+        let vars = [
+            ("TAPEDECK_LIBRARY", "/music"),
+            ("TAPEDECK_PLAYLIST_DIR", ""),
+            ("TAPEDECK_LISTENBRAINZ__TOKEN", "abc"),
+            ("TAPEDECK_listenbrainz__playlists", "[\"weekly-jams\"]"),
+            ("TAPEDECK_SERVER__LISTEN", "0.0.0.0:8687"),
+            ("TAPEDECK_SYNC__PLEX__TOKEN_FILE", "/run/secrets/plex"),
+            ("TAPEDECK_SYNC__PLEX__URL", "http://plex:32400"),
+            ("TAPEDECK_SYNC__PLEX__SECTION", "Music"),
+            ("TAPEDECK_SYNC__ON_START", "true"),
+            ("TAPEDECK_CONFIG", "/x"),
+            ("TAPEDECK_", "nope"),
+            ("HOME", "/h"),
+        ];
+        apply_env(&mut t, vars.into_iter().map(|(k, v)| (k.to_string(), v.to_string())));
+        let cfg = Config::parse_table(t).unwrap();
+        assert_eq!(cfg.library, PathBuf::from("/music"));
+        assert_eq!(cfg.playlist_dir(), PathBuf::from("/music/playlists"), "empty value removes the key");
+        assert_eq!(cfg.listenbrainz.token.as_deref(), Some("abc"));
+        assert_eq!(cfg.listenbrainz.playlists, ["weekly-jams"]);
+        assert_eq!(cfg.server.listen.as_deref(), Some("0.0.0.0:8687"));
+        let plex = cfg.sync.plex.unwrap();
+        assert_eq!(plex.token_file, Some(PathBuf::from("/run/secrets/plex")));
+        assert!(cfg.sync.on_start);
     }
 
     #[test]

@@ -1,4 +1,5 @@
 # Copy to ~/.config/tapedeck/config.toml. Full reference: https://arunoruto.github.io/tapedeck/configuration.html
+# Every key can also come from the environment: TAPEDECK_LIBRARY, TAPEDECK_SYNC__PLEX__TOKEN_FILE, … (one __ per level).
 
 library = "/srv/music"
 
@@ -47,12 +48,12 @@ section = "Music"
 # allowed_users = [123456789]
 
 # [server]                                          # HTTP API for td on other machines
-# listen = "0.0.0.0:7878"
+# listen = "0.0.0.0:8687"
 # anonymous = ["read", "stream", "listen"]          # without a token; add "request" and/or "sync" if you like
 # token_file = "/run/secrets/tapedeck/api-token"    # optional admin token
 
 # [remote]                                          # on a laptop: use that daemon instead of a local database
-# url = "http://sado:7878"
+# url = "http://sado:8687"
 # token_file = "/home/you/.config/tapedeck/api-token"   # only for admin commands
 
 # [player]

@@ -141,7 +141,8 @@ cargo install --git https://github.com/arunoruto/tapedeck
 [the docs](https://arunoruto.github.io/tapedeck/installation.html#container)):
 
 ```sh
-docker run -d -v ./config:/config -v ./data:/data -v /srv/music:/music -p 7878:7878 ghcr.io/arunoruto/tapedeck:latest
+docker run -d -v /srv/music:/music -v tapedeck-data:/data -p 8687:8687 \
+  -e TAPEDECK_LIBRARY=/music -e TAPEDECK_LISTENBRAINZ__USER=you ghcr.io/arunoruto/tapedeck:latest
 ```
 
 ### First sync

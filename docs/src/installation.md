@@ -40,20 +40,23 @@ each release is also tagged with its version (`0.1.0`), and manual builds from m
 as `sha-<short sha>` only, so `latest` never moves to an untested commit.
 
 ```sh
-mkdir -p tapedeck/config tapedeck/data
-cp config.example.toml tapedeck/config/config.toml   # set library = "/music" and your ListenBrainz user
 docker run -d --name tapedeck \
-  -v ./tapedeck/config:/config -v ./tapedeck/data:/data -v /srv/music:/music \
-  -p 7878:7878 ghcr.io/arunoruto/tapedeck:latest
+  -v /srv/music:/music -v tapedeck-data:/data -p 8687:8687 \
+  -e TAPEDECK_LIBRARY=/music -e TAPEDECK_LISTENBRAINZ__USER=you \
+  -e TAPEDECK_SYNC__TARGETS='["plex"]' -e TAPEDECK_SYNC__PLEX__URL=http://plex:32400 \
+  -e TAPEDECK_SYNC__PLEX__TOKEN_FILE=/run/secrets/plex-token -v ./plex-token:/run/secrets/plex-token:ro \
+  ghcr.io/arunoruto/tapedeck:latest
 docker exec -it tapedeck td status        # any command goes through the daemon's socket
 ```
 
-The image runs `td daemon` with `TAPEDECK_CONFIG=/config/config.toml`; the database and the
-socket live under `/data`, themes under `/config/themes`. Set `server.listen = "0.0.0.0:7878"`
-to use the [HTTP API](remote.md) from outside. The container runs as root unless you pass
-`--user <uid>:<gid>` matching the owner of the library; a `token_file` can be any path you
-mount read-only.
-
+The image runs `td daemon`. Configuration comes from [environment variables](configuration.md#environment-variables),
+from a file mounted at `/config.toml`, or both (environment wins); themes go next to the
+file, in `/themes`. The database and the socket live under `/data`, so give that a volume.
+The HTTP API listens on 8687 by default (Lidarr's port plus one), so `td` on another machine
+and the TUI's playback work with `remote.url = "http://<host>:8687"`; set
+`TAPEDECK_SERVER__LISTEN=` (empty) to switch it off, or `TAPEDECK_SERVER__TOKEN_FILE` to
+require a token for admin commands. The container runs as root unless you pass
+`--user <uid>:<gid>` matching the owner of the library.
 
 ## NixOS
 

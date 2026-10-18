@@ -5,7 +5,7 @@ on a laptop can talk to the NAS. On the daemon:
 
 ```toml
 [server]
-listen = "0.0.0.0:7878"           # or one address; nothing is served without `listen`
+listen = "0.0.0.0:8687"           # or one address; nothing is served without `listen`
 anonymous = ["read", "stream", "listen"]      # default: what a client without a token may do
 token_file = "/run/secrets/tapedeck/api-token" # optional: the admin token
 ```
@@ -17,7 +17,7 @@ library = "/unused"               # still required; not touched in remote mode
 [listenbrainz]
 user = "you"
 [remote]
-url = "http://sado:7878"
+url = "http://sado:8687"
 # token_file = "…"                # only for admin commands
 ```
 

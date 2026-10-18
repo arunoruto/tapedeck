@@ -23,8 +23,9 @@
         default = tapedeck;
       } // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
         # OCI image for docker/podman, pushed to ghcr.io/arunoruto/tapedeck by the Container
-        # workflow. `td daemon` by default; mount the config at /config/config.toml, state goes
-        # to /data, the library wherever the config says (/music by convention).
+        # workflow. `td daemon` by default, config from /config.toml and/or TAPEDECK_* variables,
+        # state under /data, the library wherever the config says (/music by convention), the HTTP
+        # API on 8687 (Lidarr + 1) unless TAPEDECK_SERVER__LISTEN is set to something else or empty.
         container = pkgs.dockerTools.buildLayeredImage {
           name = "ghcr.io/arunoruto/tapedeck";
           tag = tapedeck.version;
@@ -35,12 +36,13 @@
             Entrypoint = [ "/bin/td" ];
             Cmd = [ "daemon" ];
             Env = [
-              "TAPEDECK_CONFIG=/config/config.toml"
+              "TAPEDECK_CONFIG=/config.toml"
+              "TAPEDECK_SERVER__LISTEN=0.0.0.0:8687"
               "XDG_DATA_HOME=/data"
               "SSL_CERT_FILE=/etc/ssl/certs/ca-bundle.crt"
             ];
-            ExposedPorts."7878/tcp" = { };
-            Volumes = { "/config" = { }; "/data" = { }; "/music" = { }; };
+            ExposedPorts."8687/tcp" = { };
+            Volumes = { "/data" = { }; "/music" = { }; };
             Labels = {
               "org.opencontainers.image.source" = "https://github.com/arunoruto/tapedeck";
               "org.opencontainers.image.description" = "ListenBrainz playlists → downloaded, tagged library → Plex";

@@ -76,6 +76,32 @@ yt-dlp is searched with `ytsearch1:<artist> - <title>` unless a track has an exp
 | `section` | Name of the music library section, usually `Music`. |
 | `path_map` | Local prefix → the prefix Plex sees, e.g. `{ "/srv/music" = "/music" }` for a container. Longest match wins. Leave out if identical. |
 
+## Environment variables
+
+Every key can also come from the environment, which is how a container gets its paths and
+secrets without a mounted file. The name is `TAPEDECK_` followed by the key path with `__`
+(two underscores) between levels, in any case:
+
+```sh
+TAPEDECK_LIBRARY=/music
+TAPEDECK_LISTENBRAINZ__USER=you
+TAPEDECK_LISTENBRAINZ__PLAYLISTS='["weekly-jams", "daily-jams"]'
+TAPEDECK_SYNC__TARGETS='["plex"]'
+TAPEDECK_SYNC__PLEX__URL=http://plex:32400
+TAPEDECK_SYNC__PLEX__TOKEN_FILE=/run/secrets/plex-token
+TAPEDECK_SERVER__LISTEN=0.0.0.0:8687
+```
+
+Environment wins over the file. `true`/`false` and values starting with `[`, `{` or `"` are
+read as TOML (arrays, inline tables, quoted strings); everything else is taken as a string, so
+paths, URLs and durations need no quotes. An empty value removes the key, which switches off a
+default the container image sets (`TAPEDECK_SERVER__LISTEN=`). When at least one `TAPEDECK_*`
+variable is set, the config file may be missing altogether; `TAPEDECK_CONFIG` itself names the
+file and is not a key.
+
+Secrets work the same way: `TAPEDECK_LISTENBRAINZ__TOKEN=…` or, better, a `TOKEN_FILE` pointing
+at a mounted secret, so the token never shows up in `docker inspect`.
+
 ## Secrets
 
 Every `token` has a `token_file` twin. tapedeck reads the file when it is about to talk to
