@@ -21,8 +21,13 @@ jobs:
       - run: cargo test -- --include-ignored
 
   nix:
-    name: nix build
-    runs-on: ubuntu-latest
+    name: nix build (${{ matrix.os }})
+    # x86_64-linux for the NAS, aarch64-darwin for the MacBook; both land in the cache.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
       - uses: cachix/install-nix-action@v31
@@ -34,3 +39,8 @@ jobs:
           skipPush: ${{ github.event_name == 'pull_request' }}
       - run: nix build -L .#tapedeck
       - run: nix flake check
+        if: runner.os == 'Linux'
+      - name: Store paths (for the cache announcement)
+        run: |
+          echo "wrapper   $(nix path-info .#tapedeck)"
+          echo "unwrapped $(nix path-info .#tapedeck-unwrapped)"

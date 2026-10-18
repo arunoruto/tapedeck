@@ -232,6 +232,14 @@ paths changed are pushed again. The daemon scans on `external.scan_interval` and
 Everything that writes files (refile, retag, retry, rm) checks `is_external` first and leaves
 those alone; m3u8 and Plex see the external path like any other.
 
+## Builds and the cache
+
+CI builds the Nix package on x86_64-linux (the NAS) and aarch64-darwin (the MacBook) and pushes
+both to `arunoruto.cachix.org`, so a `nixos-rebuild` or `darwin-rebuild` against a pinned
+commit substitutes instead of compiling. Nix caches a cache miss for an hour, so a lookup that
+raced the push makes a machine compile once; `--option narinfo-cache-negative-ttl 0` forces a
+fresh look.
+
 ## Running as a service
 
 The daemon is one process: a Unix socket for commands, a ticker that runs `sync` every
