@@ -15,7 +15,7 @@ use tokio::sync::mpsc::Sender;
 
 use crate::{
     App, Event,
-    app::info,
+    app::{info, progress},
     db::{ExternalFile, Track},
     library,
     musicbrainz::strip_feat,
@@ -86,7 +86,14 @@ impl App {
                 .collect();
             let mut seen: HashSet<PathBuf> = HashSet::new();
             let (mut added, mut changed) = (0, 0);
-            for (path, size, mtime) in library::walk(root) {
+            let files = library::walk(root);
+            let total = files.len();
+            for (i, (path, size, mtime)) in files.into_iter().enumerate() {
+                progress(tx, format!("external: {}/{total} in {}", i + 1, root.display())).await?;
+                if (i + 1) % 200 == 0 {
+                    // The journal gets a heartbeat too; progress events stay out of it.
+                    info(tx, format!("external: {}/{total} files looked at in {}", i + 1, root.display())).await?;
+                }
                 if now - mtime < SETTLE_SECS {
                     continue; // still being written; next scan
                 }

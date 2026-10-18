@@ -1566,7 +1566,7 @@ pub(crate) async fn info(tx: &Sender<Event>, msg: String) -> Result<()> {
     tx.send(Event::Info { msg }).await.context("client went away")
 }
 
-async fn progress(tx: &Sender<Event>, msg: String) -> Result<()> {
+pub(crate) async fn progress(tx: &Sender<Event>, msg: String) -> Result<()> {
     tx.send(Event::Progress { msg }).await.context("client went away")
 }
 

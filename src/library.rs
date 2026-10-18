@@ -328,9 +328,10 @@ pub fn inspect(path: &Path) -> Found {
             }
         }
     }
-    if recording_mbid.is_none() {
-        // lofty's generic tag drops TXXX frames with descriptions it doesn't know, which is
-        // exactly Explo's "MusicBrainz_TrackId", so look at the raw ID3v2 frames of an MP3.
+    // lofty's generic tag drops TXXX frames with descriptions it doesn't know, which is exactly
+    // Explo's "MusicBrainz_TrackId", so look at the raw ID3v2 frames of an MP3. Only an MP3: the
+    // MPEG parser on anything else scans the whole file for a frame sync (20 s on a big FLAC).
+    if recording_mbid.is_none() && path.extension().is_some_and(|e| e.eq_ignore_ascii_case("mp3")) {
         recording_mbid = std::fs::File::open(path)
             .ok()
             .and_then(|mut fh| MpegFile::read_from(&mut fh, ParseOptions::new().read_properties(false)).ok())
