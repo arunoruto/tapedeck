@@ -7,6 +7,10 @@ tapedeck turns them into music you own. It looks every track up on MusicBrainz, 
 
 </div>
 
+> **Vibe coded, built for one person.** tapedeck is written with AI assistance for my own
+> setup and comes with no guarantees. You are welcome to try it and to
+> [file issues](https://github.com/arunoruto/tapedeck/issues); I will try to fix them.
+
 ```
  ListenBrainz ──▶ MusicBrainz ──▶ yt-dlp ──▶ tags ──▶ Artist/Album (Year)/01 - Title.opus
    playlists        metadata      audio      lofty           │

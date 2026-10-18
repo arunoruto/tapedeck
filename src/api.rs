@@ -2,7 +2,8 @@
 //! the Unix socket, over `POST /cmd` as NDJSON, plus `GET /stream/<track id>` serving a track's
 //! file with Range support so a player can seek. Off unless `[server] listen` is set; every
 //! request needs `Authorization: Bearer <token>`. The client side (`[remote] url`) lives here too.
-//! The same listener also serves the Subsonic API under `/rest/` (src/subsonic.rs).
+//! The same listener also serves the Subsonic API under `/rest/` (src/subsonic.rs, on the
+//! subsonic-server crate in crates/).
 
 use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 
@@ -14,7 +15,7 @@ use axum::{
     http::{HeaderMap, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{any, get, post},
+    routing::{get, post},
 };
 use tokio::sync::mpsc;
 use tokio_stream::{StreamExt, wrappers::ReceiverStream};
@@ -23,8 +24,8 @@ use tower_http::services::ServeFile;
 
 use crate::{App, Event, cli::Command, config::Config};
 
-pub(crate) struct Shared {
-    pub(crate) app: Arc<App>,
+struct Shared {
+    app: Arc<App>,
     /// The admin token, when one is configured.
     token: Option<String>,
     anonymous: Vec<String>,
@@ -32,7 +33,7 @@ pub(crate) struct Shared {
 
 /// Whether this request carries the admin token.
 #[derive(Clone, Copy)]
-pub(crate) struct Admin(pub(crate) bool);
+struct Admin(bool);
 
 /// What a command needs: "read", "stream", "listen", "request", "sync", or "admin" (everything else).
 pub fn scope_of(cmd: &Command) -> &'static str {
@@ -62,9 +63,10 @@ pub async fn serve(app: Arc<App>, listen: &str, token: Option<String>, anonymous
         .route("/cmd", post(cmd))
         .route("/stream/{id}", get(stream))
         .route("/ping", get(|| async { "tapedeck" }))
-        .route("/rest/{method}", any(crate::subsonic::rest))
-        .layer(middleware::from_fn_with_state(shared.clone(), auth))
-        .with_state(shared);
+        .with_state(shared.clone())
+        .merge(crate::subsonic::router(shared.app.clone(), shared.anonymous.clone()))
+        // After the merge, so the bearer check (and the Trusted flag) covers /rest too.
+        .layer(middleware::from_fn_with_state(shared, auth));
     let listener = tokio::net::TcpListener::bind(addr).await.with_context(|| format!("binding {addr}"))?;
     tracing::info!("api listening on http://{addr}");
     axum::serve(listener, router).await?;
@@ -85,10 +87,12 @@ async fn auth(State(s): State<Arc<Shared>>, mut req: Request, next: Next) -> Res
         (None, _) => false,
     };
     req.extensions_mut().insert(Admin(admin));
+    // The Subsonic routes trust the same token.
+    req.extensions_mut().insert(subsonic_server::Trusted(admin));
     next.run(req).await
 }
 
-pub(crate) fn allowed(s: &Shared, admin: bool, scope: &str) -> bool {
+fn allowed(s: &Shared, admin: bool, scope: &str) -> bool {
     admin || s.anonymous.iter().any(|a| a == scope)
 }
 

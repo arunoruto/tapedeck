@@ -7,6 +7,8 @@ cargo test -- --include-ignored    # also the live ListenBrainz / MusicBrainz te
 nix build                          # what CI and the cache build; runs the offline suite
 ```
 
+The repository is a Cargo workspace: tapedeck itself at the root and
+`crates/subsonic-server`, the Subsonic protocol layer, which depends on nothing in tapedeck.
 CI runs fmt, clippy and the full test suite, builds the Nix package on x86_64-linux and
 aarch64-darwin and pushes both to `arunoruto.cachix.org`, and publishes this book to GitHub
 Pages from `docs/`. Pushing a `v*` tag that matches `Cargo.toml` cuts a release with

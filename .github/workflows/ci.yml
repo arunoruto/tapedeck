@@ -16,9 +16,9 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --check
-      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo clippy --workspace --all-targets -- -D warnings
       # Network tests are #[ignore]d for offline builds; CI has network, so run them too.
-      - run: cargo test -- --include-ignored
+      - run: cargo test --workspace -- --include-ignored
 
   nix:
     name: nix build (${{ matrix.os }})

@@ -62,3 +62,11 @@ cliamp                # the tapedeck playlists are in the provider panel, N open
 
 cliamp reports plays back to the server, so listening in cliamp scrobbles to ListenBrainz
 without a plugin.
+
+## For other projects
+
+The protocol layer is its own crate, [`crates/subsonic-server`](https://github.com/arunoruto/tapedeck/tree/main/crates/subsonic-server):
+you implement a `Library` trait (songs, playlists, files, cover art, scrobbles) and mount
+the axum router it gives you. tapedeck's own implementation is `src/subsonic.rs`, about
+two hundred lines, and the crate has no tapedeck types in it, so it can move to a
+repository of its own when someone wants it.

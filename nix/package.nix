@@ -9,7 +9,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
 
   src = lib.fileset.toSource {
     root = ../.;
-    fileset = lib.fileset.unions [ ../Cargo.toml ../Cargo.lock ../src ../tests ../themes ../config.example.toml ];
+    fileset = lib.fileset.unions [ ../Cargo.toml ../Cargo.lock ../src ../tests ../themes ../crates ../config.example.toml ];
   };
   cargoLock.lockFile = ../Cargo.lock;
 
@@ -18,6 +18,7 @@ rustPlatform.buildRustPackage (finalAttrs: {
   # The CLI tests start `td`, which builds its HTTPS client eagerly; rustls refuses to start
   # without a CA store, and the Linux sandbox has none, so hand it cacert's bundle.
   nativeCheckInputs = [ cacert ];
+  cargoTestFlags = [ "--workspace" ];
 
   nativeInstallCheckInputs = [ versionCheckHook ];
   doInstallCheck = true;

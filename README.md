@@ -52,6 +52,10 @@ it with yt-dlp, writes proper tags, files it into a clean `Artist/Album/Track` t
 an m3u8 per playlist and pushes the playlist to Plex. Run it once, or let the daemon do it
 every few hours.
 
+> **Vibe coded, built for one person.** tapedeck is written with AI assistance for my own
+> setup and comes with no guarantees. You are welcome to try it and to
+> [file issues](https://github.com/arunoruto/tapedeck/issues); I will try to fix them.
+
 ```
  ListenBrainz ──▶ MusicBrainz ──▶ yt-dlp ──▶ tags ──▶ Artist/Album (Year)/01 - Title.opus
    playlists        metadata      audio      lofty           │

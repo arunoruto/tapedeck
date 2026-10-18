@@ -2577,6 +2577,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "subsonic-server"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "http-body-util",
+ "md-5",
+ "serde_json",
+ "serde_urlencoded",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+]
+
+[[package]]
 name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2645,13 +2661,12 @@ dependencies = [
  "clap",
  "crossterm 0.29.0",
  "lofty",
- "md-5",
  "ratatui",
  "reqwest",
  "rusqlite",
  "serde",
  "serde_json",
- "serde_urlencoded",
+ "subsonic-server",
  "tokio",
  "tokio-stream",
  "toml",
