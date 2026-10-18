@@ -78,7 +78,9 @@ yt-dlp is searched with `ytsearch1:<artist> - <title>` unless a track has an exp
 
 ## Secrets
 
-Every `token` has a `token_file` twin. tapedeck reads the file at startup, strips the
+Every `token` has a `token_file` twin. tapedeck reads the file when it is about to talk to
+that service (the daemon at start, an in-process command when it needs the target; never for
+commands that go through a running daemon's socket), strips the
 trailing newline, and from then on behaves as if `token` had been set. Setting both is an
 error. This is how you keep tokens out of a config that lives in Git or in the Nix store:
 point `token_file` at whatever sops-nix, agenix or `systemd-creds` puts on disk.
@@ -108,6 +110,12 @@ services.tapedeck = {
 sops.secrets."tapedeck/plex-token".owner = config.services.tapedeck.user;
 users.users.you.extraGroups = [ "tapedeck" ];   # to use td / td tui against the daemon
 ```
+
+The token file can stay readable by the service user alone (sops' default mode 0400): `td`
+reads it only when it talks to a target itself, and with the daemon running every command
+from a shell goes through the socket instead. Group membership and `TAPEDECK_CONFIG` apply to
+new login sessions only, so log out and in once after the first switch; until then `td` falls
+back to `~/.config/tapedeck/config.toml`.
 
 What the module does:
 

@@ -151,7 +151,8 @@ impl Config {
             .with_context(|| format!("reading config {} (see config.example.toml)", path.display()))?;
         let mut cfg = Self::parse(&text)?;
         cfg.config_dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
-        cfg.resolve_secrets()?;
+        // Secrets are read later, by whoever actually talks to a target (`resolve_secrets`):
+        // a group member running `td status` against the daemon must not need the token file.
         Ok(cfg)
     }
 
@@ -175,6 +176,9 @@ impl Config {
     }
 
     /// Replace every `token_file` with the file's contents so the rest of the code only sees `token`.
+    /// Turn `token_file`s into tokens. Called by the daemon, by in-process commands and by the
+    /// TUI's remote listing, not at load time, so the files can stay readable by the service
+    /// user only.
     pub fn resolve_secrets(&mut self) -> Result<()> {
         read_token(&mut self.listenbrainz.token, &self.listenbrainz.token_file, "[listenbrainz]")?;
         if let Some(p) = &mut self.sync.plex {

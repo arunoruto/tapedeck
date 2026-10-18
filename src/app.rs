@@ -52,7 +52,8 @@ pub struct App {
 }
 
 impl App {
-    pub fn open(config: Config) -> Result<Self> {
+    pub fn open(mut config: Config) -> Result<Self> {
+        config.resolve_secrets()?;
         let http = reqwest::Client::builder().user_agent(crate::USER_AGENT).build()?;
         Ok(Self {
             db: Mutex::new(Db::open(&config.database_path())?),
@@ -67,7 +68,16 @@ impl App {
 
     /// Run a command, streaming events. Never returns an error: failures become `Event::Error`.
     pub async fn run(&self, cmd: Command, tx: Sender<Event>) {
-        let _guard = self.busy.lock().await;
+        // Reads don't queue behind a running sync; SQLite's WAL makes them safe alongside it.
+        let read_only = matches!(
+            cmd,
+            Command::Status
+                | Command::Search { .. }
+                | Command::Playlists
+                | Command::Artists
+                | Command::Artist { folder: None, unpin: false, .. }
+        );
+        let _guard = if read_only { None } else { Some(self.busy.lock().await) };
         if let Err(e) = self.exec(cmd, &tx).await {
             let _ = tx.send(Event::Error { msg: format!("{e:#}") }).await;
         }

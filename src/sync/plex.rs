@@ -23,7 +23,7 @@ pub struct Plex {
 
 impl Plex {
     pub fn new(cfg: config::Plex) -> Self {
-        // `Config::load` has already turned token_file into token.
+        // `Config::resolve_secrets` has already turned token_file into token.
         let token = cfg.token.clone().unwrap_or_default();
         Self { cfg, token, http: Client::new() }
     }

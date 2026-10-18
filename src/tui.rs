@@ -120,13 +120,21 @@ struct Shelf<'a> {
 
 pub async fn run(config: Config) -> Result<()> {
     let db = Db::open(&config.database_path())?;
-    // Remote lists are fetched once up front; everything after that is local and instant.
+    // Remote lists are fetched once up front; everything after that is local and instant. The
+    // token may be readable only by the daemon's user; then the lists are simply absent and
+    // actions still work, since they go through the daemon.
     let mut remote = vec![];
-    for target in sync::from_config(&config)? {
-        match target.list_playlists().await {
-            Ok(list) => remote.extend(list.into_iter().map(|p| (target.name(), p))),
-            Err(e) => tracing::warn!("{}: {e:#}", target.name()),
+    let mut with_secrets = config.clone();
+    match with_secrets.resolve_secrets() {
+        Ok(()) => {
+            for target in sync::from_config(&with_secrets)? {
+                match target.list_playlists().await {
+                    Ok(list) => remote.extend(list.into_iter().map(|p| (target.name(), p))),
+                    Err(e) => tracing::warn!("{}: {e:#}", target.name()),
+                }
+            }
         }
+        Err(e) => tracing::warn!("remote playlists not listed: {e:#}"),
     }
     let theme = Theme::load(&config.themes_dir(), &config.theme)?;
     let mut tui = Tui {
