@@ -164,7 +164,10 @@ backup dangling.
 history another tool left behind (`Weekly-Jams-2026-Week*`) can be cleared without opening
 Plex. `rm` only lists matches until `--yes` is given, skips the server's own smart playlists
 unless told otherwise, and first writes each playlist as an m3u8 (local paths) plus a JSON
-sidecar under `<playlist_dir>/backup/<target>/<slug>.m3u8` (the real title stays in the JSON); `td remote backup` does only that, and
+sidecar under `<playlist_dir>/backup/<target>/<slug>.m3u8` (the real title stays in the JSON;
+a slug already taken by a playlist with another id gets the id appended, so "Weekly Jams" and
+Explo's "Weekly-Jams" keep separate backups, and the backup a push writes beforehand already
+carries the paths of files this run moved); `td remote backup` does only that, and
 `td remote restore FILE.json` recreates a playlist from the sidecar.
 
 Long loops (import's resolving pass, refile) report a `progress` event per item. On a terminal

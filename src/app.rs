@@ -50,6 +50,10 @@ pub struct App {
     targets: Vec<Box<dyn SyncTarget>>,
     // ponytail: one command at a time; downloads and the sync tick never overlap. Per-command locking if this ever hurts.
     pub(crate) busy: tokio::sync::Mutex<()>,
+    /// Files this process moved or replaced (old absolute path → new), so a backup taken later
+    /// in the same run, e.g. the one a push writes, already carries the new paths even though
+    /// the target still reports the old ones.
+    moved: Mutex<HashMap<PathBuf, PathBuf>>,
 }
 
 impl App {
@@ -63,6 +67,7 @@ impl App {
             downloader: download::from_config(&config)?,
             targets: sync::from_config(&config)?,
             busy: tokio::sync::Mutex::new(()),
+            moved: Mutex::new(HashMap::new()),
             config,
         })
     }
@@ -541,12 +546,27 @@ impl App {
     ) -> Result<()> {
         let dir = dir.join(target.name());
         std::fs::create_dir_all(&dir)?;
-        // Plex allows two playlists with one title; the second gets its id in the file name.
+        // Plex allows two playlists with one title, and "Weekly Jams" and Explo's "Weekly-Jams"
+        // slug the same: a stem already used in this run, or on disk by a sidecar with another
+        // id, gets the remote id appended. A backup never overwrites another playlist's.
         let mut used = HashSet::new();
+        let moved = self.moved.lock().unwrap_or_else(|p| p.into_inner()).clone();
         for p in hits {
-            let items = target.playlist_items(&p.id).await?;
+            let mut items = target.playlist_items(&p.id).await?;
+            for i in items.iter_mut() {
+                if let Some(new) = i.file.as_ref().and_then(|f| moved.get(f)) {
+                    i.file = Some(new.clone());
+                }
+            }
             let mut stem = m3u::slug(&p.title);
-            if !used.insert(stem.clone()) {
+            let other_id = |stem: &str| {
+                std::fs::read(dir.join(format!("{stem}.json")))
+                    .ok()
+                    .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+                    .and_then(|v| v["id"].as_str().map(str::to_string))
+                    .is_some_and(|id| id != p.id)
+            };
+            if !used.insert(stem.clone()) || other_id(&stem) {
                 stem = format!("{stem}-{}", m3u::slug(&p.id));
                 used.insert(stem.clone());
             }
@@ -863,6 +883,10 @@ impl App {
             }
         }
         if !moved.is_empty() {
+            self.moved
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .extend(moved.iter().map(|(a, b)| (a.clone(), b.clone())));
             let n = rewrite_backups(&cfg.playlist_dir().join("backup"), &moved)?;
             if n > 0 {
                 info(tx, format!("updated {n} backup files to point at the moved tracks")).await?;
@@ -1170,6 +1194,7 @@ impl App {
         if moves.is_empty() {
             return Ok(());
         }
+        self.moved.lock().unwrap_or_else(|p| p.into_inner()).extend(moves.iter().map(|(a, b)| (a.clone(), b.clone())));
         let n = rewrite_backups(&self.config.playlist_dir().join("backup"), moves)?;
         if n > 0 {
             info(tx, format!("updated {n} backup files to point at the moved tracks")).await?;
