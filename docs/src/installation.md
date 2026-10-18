@@ -88,6 +88,55 @@ docker compose up -d
 docker compose exec -it tapedeck td status
 ```
 
+For podman with systemd, a [Quadlet](https://docs.podman.io/en/latest/markdown/podman-systemd.unit.5.html)
+in `~/.config/containers/systemd/tapedeck.container` (rootless) or
+`/etc/containers/systemd/tapedeck.container` (system) does the same. The token goes into a
+podman secret first, so it is never part of the unit:
+
+```sh
+podman secret create plex-token ./plex-token
+```
+
+```ini
+[Unit]
+Description=tapedeck music sync daemon
+After=network-online.target
+Wants=network-online.target
+
+[Container]
+Image=ghcr.io/arunoruto/tapedeck:latest
+ContainerName=tapedeck
+# Follows new releases when podman-auto-update.timer is enabled; latest only ever moves to a release.
+AutoUpdate=registry
+PublishPort=8687:8687
+Volume=/srv/music:/music
+Volume=tapedeck-data:/data
+# Volume=%h/.config/tapedeck/config.toml:/config.toml:ro   # instead of, or on top of, the variables
+Environment=TAPEDECK_LIBRARY=/music
+Environment=TAPEDECK_LISTENBRAINZ__USER=you
+Environment=TAPEDECK_LISTENBRAINZ__PLAYLISTS=["weekly-jams", "weekly-exploration", "daily-jams"]
+Environment=TAPEDECK_SYNC__TARGETS=["plex"]
+Environment=TAPEDECK_SYNC__PLEX__URL=http://plex:32400
+Environment=TAPEDECK_SYNC__PLEX__SECTION=Music
+Environment=TAPEDECK_SYNC__PLEX__TOKEN_FILE=/run/secrets/plex-token
+Secret=plex-token,type=mount
+
+[Service]
+Restart=always
+
+[Install]
+WantedBy=default.target
+```
+
+```sh
+systemctl --user daemon-reload && systemctl --user start tapedeck   # drop --user for a system unit
+journalctl --user -u tapedeck -f
+podman exec -it tapedeck td status
+```
+
+For a rootless unit that should run without you logged in, `loginctl enable-linger $USER`;
+for a system unit use `WantedBy=multi-user.target`.
+
 The image runs `td daemon`. Configuration comes from [environment variables](configuration.md#environment-variables),
 from a file mounted at `/config.toml`, or both (environment wins); themes go next to the
 file, in `/themes`. The database and the socket live under `/data`, so give that a volume.
