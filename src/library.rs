@@ -426,6 +426,15 @@ mod tests {
         assert!(validate_template("{artist}/{title}.{ext}").is_ok());
     }
 
+    /// Lidarr/Picard FLACs: the recording id is the Vorbis comment MUSICBRAINZ_TRACKID.
+    #[test]
+    fn reads_vorbis_recording_id() {
+        let found = scan(&Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")).unwrap();
+        let f = found.iter().find(|f| f.path.ends_with("lidarr-vorbis.flac")).unwrap();
+        assert_eq!(f.recording_mbid.as_deref(), Some("352dd518-23cd-4c5a-9551-ba02097b177b"));
+        assert_eq!((f.artist.as_str(), f.title.as_str()), ("Linkin Park", "Numb"));
+    }
+
     /// Explo's files: ID3v2.4, a UTF-8 TXXX frame described "MusicBrainz_TrackId" whose value
     /// ends in a NUL. Written by ffmpeg exactly like Explo does it.
     #[test]
