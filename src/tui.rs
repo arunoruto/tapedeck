@@ -799,7 +799,7 @@ impl Tui {
             .collect();
         let table = Table::new(
             rows,
-            [Constraint::Length(3), Constraint::Length(8), Constraint::Min(10), Constraint::Length(5)],
+            [Constraint::Length(3), Constraint::Length(10), Constraint::Min(10), Constraint::Length(5)],
         )
         .header(self.header(["#", "STATUS", "TITLE", "LEN"]))
         .block(self.pane(" Songs ", self.pane == 2));
@@ -875,7 +875,7 @@ impl Tui {
         let table = Table::new(
             rows,
             [
-                Constraint::Length(8),
+                Constraint::Length(10),
                 Constraint::Percentage(25),
                 Constraint::Percentage(35),
                 Constraint::Percentage(30),
