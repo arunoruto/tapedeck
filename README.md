@@ -80,7 +80,7 @@ binary is called `td`.
   rather than the music video with the two-minute intro.
 - **Plex sync** that scans the library, matches files and recreates the playlist.
 - **Plays, too**: `Enter` in the TUI plays a track and queues the rest through mpv, locally or
-  streamed from the NAS.
+  streamed from the NAS, and scrobbles to ListenBrainz so next week's playlists know.
 - **Use it from your laptop**: the daemon serves its commands and the audio over HTTP behind a
   token, so `td tui` on another machine browses and controls the NAS.
 - **Song requests from Telegram**: send a link or "Artist - Title", get the proper recording

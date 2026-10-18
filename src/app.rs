@@ -78,6 +78,7 @@ impl App {
         let read_only = matches!(
             cmd,
             Command::Status
+                | Command::Listen { .. }
                 | Command::Search { .. }
                 | Command::Playlists
                 | Command::Tracks
@@ -117,6 +118,24 @@ impl App {
                     }
                 }
                 data(tx, json!(rows)).await
+            }
+            Command::Listen { track, now } => {
+                if !self.lb.has_token() {
+                    return info(tx, "no listenbrainz token on this side; listen not submitted".into()).await;
+                }
+                let t = self.db().track_by_id(track)?.with_context(|| format!("no track with id {track}"))?;
+                if now {
+                    if let Err(e) = self.lb.submit_listen(&t, None).await {
+                        tracing::debug!("playing_now: {e:#}");
+                    }
+                    return Ok(());
+                }
+                let at = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs() as i64)
+                    .unwrap_or(0);
+                self.db().enqueue_listen(track, at)?;
+                self.flush_listens(tx).await
             }
             Command::Status => {
                 let counts: serde_json::Map<_, _> =
@@ -1212,6 +1231,31 @@ impl App {
         let file = m3u::write(&cfg.playlist_dir(), &cfg.library, &p.kind, &p.name, &tracks)?;
         self.db().set_playlist_m3u(pid, &file.to_string_lossy())?;
         self.push(p, None, tx).await
+    }
+
+    /// Submit queued listens, oldest first; stop at the first failure (offline, 5xx) and leave
+    /// the rest for next time.
+    pub(crate) async fn flush_listens(&self, tx: &Sender<Event>) -> Result<()> {
+        let pending = self.db().pending_listens()?;
+        for (id, track_id, at) in pending {
+            let track = self.db().track_by_id(track_id)?;
+            let Some(t) = track else {
+                self.db().listen_done(id)?;
+                continue;
+            };
+            match self.lb.submit_listen(&t, Some(at)).await {
+                Ok(()) => {
+                    self.db().listen_done(id)?;
+                    info(tx, format!("scrobbled {} - {}", t.artist, t.title)).await?;
+                }
+                Err(e) => {
+                    self.db().listen_failed(id)?;
+                    info(tx, format!("listen queued, ListenBrainz unreachable: {e:#}")).await?;
+                    break;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Point playlist backups at files that just moved, whoever moved them.

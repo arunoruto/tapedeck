@@ -44,6 +44,7 @@ pub fn scope_of(cmd: &Command) -> &'static str {
         | Command::RemotePlaylists
         | Command::Artists
         | Command::Artist { folder: None, unpin: false, .. } => "read",
+        Command::Listen { .. } => "listen",
         Command::Request { .. } => "request",
         Command::Sync { .. } => "sync",
         _ => "admin",

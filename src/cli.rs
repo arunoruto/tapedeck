@@ -51,6 +51,13 @@ pub enum Command {
     /// Playlists on the sync targets, as JSON rows.
     #[command(hide = true)]
     RemotePlaylists,
+    /// Tell ListenBrainz about a play: `--now` for "playing now", otherwise a finished listen.
+    #[command(hide = true)]
+    Listen {
+        track: i64,
+        #[arg(long)]
+        now: bool,
+    },
     /// Search tracks by artist, album or title.
     Search { query: String },
     /// Playlists and where they have been synced.

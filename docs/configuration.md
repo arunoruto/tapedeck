@@ -227,7 +227,15 @@ playing with a position bar. In remote mode the audio is streamed from the daemo
 ```toml
 [player]
 mpv_bin = "mpv"       # default; the Home Manager wrapper puts its mpvPackage on PATH
+scrobble = true       # report plays to ListenBrainz
 ```
+
+Plays are reported to ListenBrainz the way it asks: "playing now" when a track starts, a
+listen after half the track or four minutes, whichever comes first, with the recording id
+attached. The daemon does the submitting with its `listenbrainz.token`, so a laptop in remote
+mode never needs the token; the `listen` scope covers it. Listens that cannot be delivered
+(offline, ListenBrainz down) are queued in the database and sent on the next play or daemon
+start. Without a token on the daemon nothing is sent and nothing is queued.
 
 ## Remote use: `[server]` and `[remote]`
 

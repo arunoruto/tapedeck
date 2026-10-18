@@ -91,3 +91,12 @@ CREATE TABLE IF NOT EXISTS requests (
     requested_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
     confirmed_at TEXT
 );
+
+-- Listens that could not be submitted to ListenBrainz yet (offline, 5xx); retried on the
+-- next listen and at daemon start.
+CREATE TABLE IF NOT EXISTS listens (
+    id          INTEGER PRIMARY KEY,
+    track_id    INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,
+    listened_at INTEGER NOT NULL,
+    attempts    INTEGER NOT NULL DEFAULT 0
+);

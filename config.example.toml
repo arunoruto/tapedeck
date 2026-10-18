@@ -57,3 +57,4 @@ section = "Music"
 
 # [player]
 # mpv_bin = "mpv"                                   # playback in the TUI
+# scrobble = true                                   # report plays to ListenBrainz (the daemon submits)

@@ -182,7 +182,11 @@ more NDJSON line, so a script can show its own counter.
 first play with `--input-ipc-server`, given file paths (local) or `/stream/<id>` URLs (remote,
 with the bearer header fixed at launch), and polled for position and state every other TUI
 tick. The queue is tapedeck's, so the bar shows "Artist – Title" rather than a URL. Nothing
-decodes audio in tapedeck; mpv handles formats, gapless playback and prefetching.
+decodes audio in tapedeck; mpv handles formats, gapless playback and prefetching. Scrobbling
+follows ListenBrainz's rule from the same poll: the TUI fires `listen --now` when the track id
+changes and `listen` once position passes half the length or four minutes, and the daemon
+submits with its token, queueing failures in `listens` and flushing them at the next listen
+or start. That keeps the token on the server and makes the `listen` scope safe to leave open.
 
 ## Remote use
 

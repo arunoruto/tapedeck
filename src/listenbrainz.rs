@@ -65,6 +65,53 @@ impl ListenBrainz {
     pub async fn tracks(&self, playlist_mbid: &str) -> Result<Vec<LbTrack>> {
         Ok(parse_tracks(&self.get(&format!("playlist/{playlist_mbid}")).await?))
     }
+
+    pub fn has_token(&self) -> bool {
+        self.token.is_some()
+    }
+
+    /// Submit one listen: `listened_at = None` means "playing now", otherwise a finished listen
+    /// at that Unix time. The recording id goes along so ListenBrainz maps it exactly.
+    pub async fn submit_listen(&self, t: &crate::db::Track, listened_at: Option<i64>) -> Result<()> {
+        let token = self.token.as_ref().context("no listenbrainz token")?;
+        let mut meta = serde_json::json!({
+            "artist_name": t.artist,
+            "track_name": t.title,
+            "release_name": t.album,
+            "additional_info": {
+                "media_player": "tapedeck",
+                "submission_client": "tapedeck",
+                "submission_client_version": env!("CARGO_PKG_VERSION"),
+                "duration_ms": t.duration_ms,
+            }
+        });
+        if crate::library::is_uuid(&t.recording_mbid) {
+            meta["additional_info"]["recording_mbid"] = serde_json::json!(t.recording_mbid);
+        }
+        let mut item = serde_json::json!({ "track_metadata": meta });
+        if let Some(at) = listened_at {
+            item["listened_at"] = serde_json::json!(at);
+        }
+        let body = serde_json::json!({
+            "listen_type": if listened_at.is_some() { "single" } else { "playing_now" },
+            "payload": [item],
+        });
+        let res = self
+            .http
+            .post(format!("{API}/submit-listens"))
+            .header("Authorization", format!("Token {token}"))
+            .json(&body)
+            .send()
+            .await
+            .context("submit-listens")?;
+        anyhow::ensure!(
+            res.status().is_success(),
+            "submit-listens: {} {}",
+            res.status(),
+            res.text().await.unwrap_or_default()
+        );
+        Ok(())
+    }
 }
 
 pub fn parse_created_for(v: &Value) -> Vec<LbPlaylist> {

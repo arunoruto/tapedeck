@@ -331,6 +331,29 @@ impl Db {
         Ok(self.0.query_row("SELECT COUNT(*) FROM requests WHERE confirmed_at IS NULL", [], |r| r.get(0))?)
     }
 
+    pub fn enqueue_listen(&self, track_id: i64, listened_at: i64) -> Result<()> {
+        self.0
+            .execute("INSERT INTO listens (track_id, listened_at) VALUES (?1, ?2)", params![track_id, listened_at])?;
+        Ok(())
+    }
+
+    /// `(queue id, track id, listened_at)`, oldest first.
+    pub fn pending_listens(&self) -> Result<Vec<(i64, i64, i64)>> {
+        let mut st = self.0.prepare("SELECT id, track_id, listened_at FROM listens ORDER BY id LIMIT 50")?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    pub fn listen_done(&self, id: i64) -> Result<()> {
+        self.0.execute("DELETE FROM listens WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
+    pub fn listen_failed(&self, id: i64) -> Result<()> {
+        self.0.execute("UPDATE listens SET attempts = attempts + 1 WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
     pub fn meta_get(&self, key: &str) -> Result<Option<String>> {
         Ok(self.0.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0)).optional()?)
     }

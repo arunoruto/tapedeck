@@ -82,11 +82,14 @@ pub struct Remote {
 pub struct PlayerCfg {
     #[serde(default = "default_mpv")]
     pub mpv_bin: String,
+    /// Report plays to ListenBrainz (through the daemon, which holds the token).
+    #[serde(default = "default_true")]
+    pub scrobble: bool,
 }
 
 impl Default for PlayerCfg {
     fn default() -> Self {
-        Self { mpv_bin: default_mpv() }
+        Self { mpv_bin: default_mpv(), scrobble: true }
     }
 }
 

@@ -106,6 +106,20 @@ pub async fn serve(cfg: Config) -> Result<()> {
         });
     }
 
+    // Listens queued while ListenBrainz was unreachable.
+    {
+        let (tx, mut rx) = mpsc::channel(64);
+        let a = app.clone();
+        tokio::spawn(async move {
+            let _ = a.flush_listens(&tx).await;
+        });
+        tokio::spawn(async move {
+            while let Some(ev) = rx.recv().await {
+                log_event(&ev);
+            }
+        });
+    }
+
     if let Some(listen) = app.config.server.listen.clone() {
         let token = app.config.server.token.clone();
         let anonymous = app.config.server.anonymous.clone();

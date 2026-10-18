@@ -105,6 +105,9 @@ struct Tui {
     /// mpv, started on the first play.
     player: Option<Player>,
     now: player::Status,
+    /// Which track "playing now" was sent for, and which one was scrobbled.
+    announced: Option<i64>,
+    scrobbled: Option<i64>,
     /// Library tab. The three columns are derived from `all` on every draw, see `shelf`.
     all: Vec<Track>,
     artists: ListState,
@@ -141,6 +144,8 @@ pub async fn run(config: Config) -> Result<()> {
         ticks: 0,
         player: None,
         now: player::Status::default(),
+        announced: None,
+        scrobbled: None,
         all: vec![],
         artists: ListState::default().with_selected(Some(0)),
         albums: ListState::default().with_selected(Some(0)),
@@ -376,6 +381,7 @@ impl Tui {
                 && self.ticks.is_multiple_of(2)
             {
                 self.now = p.status();
+                self.scrobble();
             }
             self.ticks += 1;
             terminal.draw(|f| self.draw(f))?;
@@ -639,6 +645,40 @@ impl Tui {
         if self.status.is_empty() {
             self.status = format!("playing {n} tracks");
         }
+    }
+
+    /// ListenBrainz's rule: "playing now" when a track starts, a listen after half of it or
+    /// four minutes, whichever comes first. The daemon submits; this just sends the commands.
+    fn scrobble(&mut self) {
+        if !self.config.player.scrobble || self.now.idle {
+            return;
+        }
+        let Some(id) = self.now.track_id else { return };
+        if self.announced != Some(id) {
+            self.announced = Some(id);
+            self.fire(Command::Listen { track: id, now: true });
+        }
+        let threshold = (self.now.duration / 2.0).min(240.0);
+        if self.scrobbled != Some(id) && self.now.duration > 0.0 && self.now.pos >= threshold {
+            self.scrobbled = Some(id);
+            self.fire(Command::Listen { track: id, now: false });
+        }
+    }
+
+    /// Run a command without waiting for it; its lines go to the log.
+    fn fire(&self, cmd: Command) {
+        let cfg = self.config.clone();
+        self.rt.spawn(async move {
+            let (tx, mut rx) = mpsc::channel::<TdEvent>(16);
+            tokio::spawn(async move {
+                while let Some(ev) = rx.recv().await {
+                    if let TdEvent::Error { msg } = ev {
+                        tracing::warn!("{msg}");
+                    }
+                }
+            });
+            let _ = daemon::dispatch(&cfg, cmd, tx).await;
+        });
     }
 
     fn player_do(&mut self, f: impl FnOnce(&mut Player) -> Result<()>) {
