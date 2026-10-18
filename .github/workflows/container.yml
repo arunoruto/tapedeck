@@ -35,6 +35,11 @@ jobs:
           name: arunoruto
           authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
       - run: nix build -L .#container
+      - name: Smoke test (the image must start before it is pushed)
+        run: |
+          img=$(podman load -q -i "$(readlink -f result)" | sed 's/^Loaded image: //')
+          podman run --rm "$img" --version
+          podman run --rm --tmpfs /music -e TAPEDECK_LIBRARY=/music -e TAPEDECK_LISTENBRAINZ__USER=smoke "$img" status
       - name: Push ${{ matrix.arch }} image
         run: |
           tag=$([[ $GITHUB_REF_TYPE == tag ]] && echo "${GITHUB_REF_NAME#v}" || echo "sha-${GITHUB_SHA::7}")
