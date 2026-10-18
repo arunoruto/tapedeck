@@ -14,7 +14,7 @@
   <p align="center">
     Your ListenBrainz recommendations, downloaded, tagged, filed and in Plex. Automatically.
     <br />
-    <a href="docs/configuration.md"><strong>Configuration reference »</strong></a>
+    <a href="https://arunoruto.github.io/tapedeck/configuration.html"><strong>Configuration reference »</strong></a>
     <br />
     <br />
     <a href="https://github.com/arunoruto/tapedeck/releases">Releases</a>
@@ -167,7 +167,7 @@ section = "Music"
 ```
 
 Everything else has a default. The full reference is in
-[docs/configuration.md](docs/configuration.md).
+[the docs](https://arunoruto.github.io/tapedeck/configuration.html).
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -208,7 +208,7 @@ local and remote. Every action asks before it touches anything.
 
 Colours come from a theme: Catppuccin Mocha by default, Latte built in for light terminals,
 and your own as a TOML file under `themes/` next to the config (see
-[docs/configuration.md](docs/configuration.md#themes)). The recording above is made with
+[the docs](https://arunoruto.github.io/tapedeck/tui.html#themes)). The recording above is made with
 [vhs](https://github.com/charmbracelet/vhs) from `assets/demo.tape`.
 
 After a sync the library looks like this:
@@ -246,7 +246,7 @@ services.tapedeck = {
 That runs the daemon as its own system user from boot, shares its database and socket with
 the `tapedeck` group so `td tui` works for members, and takes secrets from the system's
 sops-nix. Details and the migration from a user unit are in
-[docs/configuration.md](docs/configuration.md#nixos).
+[the docs](https://arunoruto.github.io/tapedeck/installation.html#nixos).
 
 With Home Manager, import `tapedeck.homeModules.default` from the flake and:
 
@@ -276,7 +276,7 @@ target.
 - [ ] Playback, eventually
 
 Sync targets and download backends are each one small trait; see
-[docs/architecture.md](docs/architecture.md#extension-points). Open
+[the architecture page](https://arunoruto.github.io/tapedeck/architecture.html#extension-points). Open
 [issues](https://github.com/arunoruto/tapedeck/issues) for the rest.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
@@ -292,7 +292,7 @@ nix build                          # what CI and the cache build; runs the offli
 
 CI runs `cargo fmt --check`, `clippy -D warnings`, the full test suite and the Nix build.
 Design notes and the reasoning behind the non-obvious choices are in
-[docs/architecture.md](docs/architecture.md). Releases are cut by pushing a `v*` tag matching
+[https://arunoruto.github.io/tapedeck/architecture.html](https://arunoruto.github.io/tapedeck/architecture.html). Releases are cut by pushing a `v*` tag matching
 `Cargo.toml`; CI builds the binaries and publishes them.
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>

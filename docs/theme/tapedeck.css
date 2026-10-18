@@ -1,0 +1,8 @@
+/* A calmer reading width, a landing banner for the introduction, and the cassette's stripes
+   as a small accent under the title. */
+:root { --content-max-width: 860px; }
+.hero { padding: 1.5rem 1.75rem; margin: 1rem 0 2rem; border-radius: 12px; border: 1px solid var(--table-border-color); background: var(--table-alternate-bg); }
+.hero p { margin: 0.4rem 0; font-size: 1.1em; }
+.hero code { font-size: 0.95em; }
+.stripes { display: inline-block; height: 6px; width: 72px; border-radius: 3px; vertical-align: middle; margin-left: 0.5rem;
+  background: linear-gradient(90deg, #f38ba8 0 33%, #fab387 33% 66%, #f9e2af 66% 100%); }

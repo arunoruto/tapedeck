@@ -69,7 +69,7 @@ in
       default = { };
       description = ''
         Written to {file}`/etc/tapedeck/config.toml`. All keys are documented in
-        docs/configuration.md. `library` is required. `database` and `socket` default to
+        https://arunoruto.github.io/tapedeck/configuration.html. `library` is required. `database` and `socket` default to
         {file}`/var/lib/tapedeck/tapedeck.db` and {file}`/run/tapedeck/tapedeck.sock`. Keep secrets
         out of the Nix store: point `token_file` at a file managed by sops-nix or agenix, owned by
         the service user.

@@ -37,7 +37,7 @@ in
       default = { };
       description = ''
         Written to {file}`$XDG_CONFIG_HOME/tapedeck/config.toml`. All keys are documented in
-        docs/configuration.md. Keep secrets out of the Nix store by pointing `token_file` at a
+        https://arunoruto.github.io/tapedeck/configuration.html. Keep secrets out of the Nix store by pointing `token_file` at a
         file managed by sops-nix, agenix or similar instead of setting `token`.
       '';
       example = lib.literalExpression ''

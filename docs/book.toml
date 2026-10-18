@@ -1,0 +1,18 @@
+[book]
+title = "tapedeck"
+description = "ListenBrainz playlists → downloads → tagged library → Plex, with a TUI, a Telegram bot and playback"
+authors = ["Mirza Arnaut"]
+language = "en"
+src = "src"
+
+[output.html]
+site-url = "/tapedeck/"
+git-repository-url = "https://github.com/arunoruto/tapedeck"
+edit-url-template = "https://github.com/arunoruto/tapedeck/edit/main/docs/{path}"
+default-theme = "light"
+preferred-dark-theme = "navy"
+additional-css = ["theme/tapedeck.css"]
+
+[output.html.fold]
+enable = true
+level = 1

@@ -1,4 +1,4 @@
-# Copy to ~/.config/tapedeck/config.toml. Full reference: docs/configuration.md
+# Copy to ~/.config/tapedeck/config.toml. Full reference: https://arunoruto.github.io/tapedeck/configuration.html
 
 library = "/srv/music"
 
