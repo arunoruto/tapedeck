@@ -218,6 +218,14 @@ impl Db {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
+    pub fn artist_folder(&self, mbid: &str) -> Result<Option<String>> {
+        Ok(self
+            .0
+            .query_row("SELECT folder FROM artists WHERE mbid = ?1", [mbid], |r| r.get::<_, Option<String>>(0))
+            .optional()?
+            .flatten())
+    }
+
     /// Pin (or with `None` unpin) the folder name used for an artist instead of MusicBrainz's.
     pub fn set_artist_folder(&self, id: i64, folder: Option<&str>) -> Result<()> {
         self.0.execute("UPDATE artists SET folder = ?2 WHERE id = ?1", params![id, folder])?;
