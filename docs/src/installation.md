@@ -137,6 +137,39 @@ podman exec -it tapedeck td status
 For a rootless unit that should run without you logged in, `loginctl enable-linger $USER`;
 for a system unit use `WantedBy=multi-user.target`.
 
+On NixOS the same container is a few lines of `virtualisation.oci-containers`, with the token
+coming straight from sops-nix (the [native module](#nixos) below is the better fit on NixOS,
+but this keeps tapedeck next to other containers you already run this way):
+
+```nix
+virtualisation.oci-containers = {
+  backend = "podman";
+  containers.tapedeck = {
+    image = "ghcr.io/arunoruto/tapedeck:latest";
+    ports = [ "8687:8687" ];
+    volumes = [
+      "/srv/music:/music"
+      "tapedeck-data:/data"
+      "${config.sops.secrets."tapedeck/plex-token".path}:/run/secrets/plex-token:ro"
+      # "/etc/tapedeck/config.toml:/config.toml:ro"   # instead of, or on top of, the variables
+    ];
+    environment = {
+      TAPEDECK_LIBRARY = "/music";
+      TAPEDECK_LISTENBRAINZ__USER = "you";
+      TAPEDECK_LISTENBRAINZ__PLAYLISTS = ''["weekly-jams", "weekly-exploration", "daily-jams"]'';
+      TAPEDECK_SYNC__TARGETS = ''["plex"]'';
+      TAPEDECK_SYNC__PLEX__URL = "http://plex:32400";
+      TAPEDECK_SYNC__PLEX__SECTION = "Music";
+      TAPEDECK_SYNC__PLEX__TOKEN_FILE = "/run/secrets/plex-token";
+    };
+    extraOptions = [ "--label=io.containers.autoupdate=registry" ];
+  };
+};
+```
+
+That becomes `podman-tapedeck.service`; `journalctl -u podman-tapedeck -f` and
+`podman exec -it tapedeck td status` work as above.
+
 The image runs `td daemon`. Configuration comes from [environment variables](configuration.md#environment-variables),
 from a file mounted at `/config.toml`, or both (environment wins); themes go next to the
 file, in `/themes`. The database and the socket live under `/data`, so give that a volume.
