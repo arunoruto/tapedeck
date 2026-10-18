@@ -223,6 +223,21 @@ After a sync the library looks like this:
 
 ## Running as a service
 
+On NixOS, import `tapedeck.nixosModules.default` from the flake and:
+
+```nix
+services.tapedeck = {
+  enable = true;
+  extraGroups = [ "media" ];
+  settings = { library = "/srv/music"; listenbrainz.user = "you"; /* ... */ };
+};
+```
+
+That runs the daemon as its own system user from boot, shares its database and socket with
+the `tapedeck` group so `td tui` works for members, and takes secrets from the system's
+sops-nix. Details and the migration from a user unit are in
+[docs/configuration.md](docs/configuration.md#nixos).
+
 With Home Manager, import `tapedeck.homeModules.default` from the flake and:
 
 ```nix

@@ -61,7 +61,12 @@ pub async fn serve(cfg: Config) -> Result<()> {
 
     // Periodic sync. Events go to the log.
     let ticker = app.clone();
+    let on_start = app.config.sync.on_start;
     tokio::spawn(async move {
+        if !on_start {
+            tracing::info!("sync.on_start is off; first sync in {interval:?}");
+            tokio::time::sleep(interval).await;
+        }
         loop {
             let (tx, mut rx) = mpsc::channel(64);
             let a = ticker.clone();

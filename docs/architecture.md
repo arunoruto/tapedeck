@@ -168,6 +168,17 @@ Long loops (import's resolving pass, refile) report a `progress` event per item.
 it overwrites itself on one line; in a pipe or the journal it is dropped; with `--json` it is one
 more NDJSON line, so a script can show its own counter.
 
+## Running as a service
+
+The daemon is one process: a Unix socket for commands and a ticker that runs `sync` every
+`sync.interval` (immediately on start unless `sync.on_start = false`). Two modules wrap it.
+The Home Manager one is a user unit for a desktop. The NixOS one is for a server: its own
+system user and group, `StateDirectory`/`RuntimeDirectory` with mode 0770 and `UMask=0002` so
+group members can use the CLI and TUI against the running daemon and the files it writes are
+group-writable for Plex and Samba, `TAPEDECK_CONFIG` pointing every shell at the system config,
+and the usual systemd sandboxing with the library and playlist folder as the only writable
+paths.
+
 ## TUI
 
 `td tui` (and plain `td`) opens the database directly (no daemon round-trip) and fetches each

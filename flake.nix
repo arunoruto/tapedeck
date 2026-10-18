@@ -33,6 +33,12 @@
       };
       homeManagerModules = self.homeModules;
 
+      # NixOS: services.tapedeck.{enable,package,ytdlpPackage,ffmpegPackage,user,group,extraGroups,environmentFile,settings}.
+      nixosModules.default = { pkgs, lib, ... }: {
+        imports = [ ./nix/nixos-module.nix ];
+        services.tapedeck.package = lib.mkDefault self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+      };
+
       devShells = forAll (pkgs: {
         default = pkgs.mkShell {
           packages = with pkgs; [

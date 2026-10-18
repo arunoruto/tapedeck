@@ -73,6 +73,10 @@ pub struct Sync {
     /// Playlist name on the targets. `{name}` is "Weekly Jams", `{kind}` is "weekly-jams".
     #[serde(default = "default_playlist_title")]
     pub playlist_title: String,
+    /// Whether the daemon syncs right when it starts (and after every restart), or waits one
+    /// interval first.
+    #[serde(default = "default_true")]
+    pub on_start: bool,
     pub plex: Option<Plex>,
 }
 
@@ -93,7 +97,13 @@ pub struct Plex {
 // A missing [sync] table must mean the same as an empty one, so defaults live in one place.
 impl Default for Sync {
     fn default() -> Self {
-        Self { interval: default_interval(), targets: vec![], playlist_title: default_playlist_title(), plex: None }
+        Self {
+            interval: default_interval(),
+            targets: vec![],
+            playlist_title: default_playlist_title(),
+            on_start: true,
+            plex: None,
+        }
     }
 }
 
@@ -117,6 +127,9 @@ fn default_ytdlp() -> String {
 }
 fn default_interval() -> String {
     "6h".into()
+}
+fn default_true() -> bool {
+    true
 }
 fn default_playlist_title() -> String {
     "{name}".into()

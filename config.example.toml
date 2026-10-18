@@ -26,6 +26,7 @@ format = "opus"           # anything yt-dlp --audio-format accepts
 [sync]
 interval = "6h"           # daemon sync cadence: 30m, 6h, 1d
 targets = ["plex"]
+# on_start = true              # sync right when the daemon starts (and after restarts); false waits one interval
 # playlist_title = "{name}"   # name on the targets; {name} = "Weekly Jams", {kind} = "weekly-jams"
 
 [sync.plex]

@@ -62,6 +62,7 @@ yt-dlp is searched with `ytsearch1:<artist> - <title>` unless a track has an exp
 | Key | Default | Meaning |
 |---|---|---|
 | `interval` | `6h` | How often the daemon runs `sync`. Suffixes: `s`, `m`, `h`, `d`. |
+| `on_start` | `true` | Sync as soon as the daemon starts, and after every restart (which includes a Plex push). `false` waits one interval first. |
 | `targets` | `[]` | Enabled targets, in push order. Only `plex` exists today. |
 | `playlist_title` | `{name}` | Playlist name on the targets. `{name}` is the kind in title case (`Weekly Jams`), `{kind}` the raw kind (`weekly-jams`). Use something like `{name} (tapedeck)` if another tool already owns the plain names. |
 
@@ -81,6 +82,68 @@ Every `token` has a `token_file` twin. tapedeck reads the file at startup, strip
 trailing newline, and from then on behaves as if `token` had been set. Setting both is an
 error. This is how you keep tokens out of a config that lives in Git or in the Nix store:
 point `token_file` at whatever sops-nix, agenix or `systemd-creds` puts on disk.
+
+## NixOS
+
+On a server tapedeck should run like Plex or Lidarr do: as its own system user from boot,
+secrets from the system's sops-nix, files shared with the media group, logs in
+`journalctl -u tapedeck`. The flake exports a NixOS module for that. Add the flake as an input,
+import `tapedeck.nixosModules.default`, then:
+
+```nix
+services.tapedeck = {
+  enable = true;
+  extraGroups = [ "media" ];           # the group that owns the library
+  settings = {
+    library = "/srv/music/tapedeck";
+    listenbrainz = { user = "you"; playlists = [ "weekly-jams" "weekly-exploration" "daily-jams" ]; };
+    sync.targets = [ "plex" ];
+    sync.plex = {
+      url = "http://127.0.0.1:32400";
+      token_file = config.sops.secrets."tapedeck/plex-token".path;
+      section = "Music";
+    };
+  };
+};
+sops.secrets."tapedeck/plex-token".owner = config.services.tapedeck.user;
+users.users.you.extraGroups = [ "tapedeck" ];   # to use td / td tui against the daemon
+```
+
+What the module does:
+
+- Runs `td daemon --config /etc/tapedeck/config.toml` as user and group `tapedeck` (both
+  created; override `user`/`group` to use existing ones), with `extraGroups` as supplementary
+  groups. `package`, `ytdlpPackage` and `ffmpegPackage` work as in the Home Manager module.
+- `database` defaults to `/var/lib/tapedeck/tapedeck.db` and `socket` to
+  `/run/tapedeck/tapedeck.sock`; both directories are mode 0770 and the unit's umask is 0002,
+  so members of the group can run `td status` or `td tui` and have their actions go through
+  the daemon. Downloaded files come out group-writable as well, which is what Plex and Samba
+  want.
+- Puts `td` in `environment.systemPackages` and sets `TAPEDECK_CONFIG` to the system config,
+  so every shell uses the same config, database and socket.
+- Restarts on failure and on a changed config, waits for `network-online.target`, and is
+  sandboxed (`ProtectSystem=strict` with the library and playlist folder writable, no home,
+  private tmp and devices, no new privileges).
+
+Make the library writable by the service before the first start:
+
+```sh
+sudo install -d -o tapedeck -g media -m 2775 /srv/music/tapedeck
+```
+
+Moving from the Home Manager daemon on the same machine: disable `services.tapedeck` in Home
+Manager and switch, then
+
+```sh
+sudo install -d -o tapedeck -g tapedeck -m 770 /var/lib/tapedeck
+sudo mv ~/.local/share/tapedeck/tapedeck.db /var/lib/tapedeck/
+sudo chown tapedeck:tapedeck /var/lib/tapedeck/tapedeck.db
+sudo chown -R tapedeck:media /srv/music/tapedeck && sudo chmod -R g+rwX /srv/music/tapedeck
+```
+
+and switch to the NixOS configuration. The playlist folder inside the library and its backups
+come along with the library. Set `sync.on_start = false` if you would rather the first sync
+waited for the interval than ran at boot.
 
 ## Home Manager
 
