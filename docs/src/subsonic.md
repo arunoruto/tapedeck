@@ -40,14 +40,18 @@ bearer token of the HTTP API passes too.
   Requests playlists from the Telegram bot.
 - **Artists and albums**: the library grouped by MusicBrainz release and artist, so names
   follow MusicBrainz and ids survive renames. Search covers artists, albums and titles.
-- **Cover art**: from the Cover Art Archive by release id, as a redirect, so nothing is stored.
+- **Cover art**: from the Cover Art Archive by release id, fetched once per size and kept in
+  `covers/` next to the database.
 - **Streaming**: the original files with seeking, own and [external](external.md) ones alike.
 - **Scrobbling**: the client's "now playing" and "scrobble" calls become listens on your
   ListenBrainz account through the daemon's token, with the same queue and retry as the TUI.
 
 Favourites and ratings are accepted and dropped, since tapedeck keeps no stars; playlist
-editing from the client is not offered, playlists come from ListenBrainz. Responses are JSON
-whatever the client asks for, which every current client accepts.
+editing from the client is not offered, playlists come from ListenBrainz. Artist and album
+info pages, lyrics, podcasts, bookmarks and the play queue answer empty, so clients that ask
+for them after login carry on. Both the ID3 (`getArtists`) and the folder (`getIndexes`,
+`getMusicDirectory`) browsing styles work, and responses are XML by default or JSON with
+`f=json`, as the protocol says.
 
 ## cliamp
 

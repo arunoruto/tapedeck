@@ -1,8 +1,11 @@
 //! A Subsonic face for the daemon, so cliamp, Symfonium, Feishin, DSub and the other Subsonic
 //! apps play the library straight from tapedeck and scrobble through it. It shares the
-//! `[server] listen` port under `/rest/`, answers JSON whatever `f` says, and covers the calls a
-//! player needs: ping, browsing by artist/album (ID3 style), search, playlists, stream, cover
-//! art, scrobble. The rest returns a Subsonic error rather than a 404.
+//! `[server] listen` port under `/rest/`, answers XML by default and JSON for `f=json`, and
+//! covers the calls a player needs: ping, browsing by artist/album (ID3 and folder style),
+//! search, playlists, stream, cover art (proxied from the Cover Art Archive and cached next to
+//! the database), scrobble. Info-style calls tapedeck has nothing for (artist info, lyrics,
+//! podcasts, bookmarks, play queue…) answer with an empty but valid payload, because clients
+//! fire them right after login and treat a failure as a broken server.
 //!
 //! Sign-in is the protocol's own `u`+`t`+`s` (or `p`) check against `[server.subsonic]`. Without
 //! a user configured, every client is anonymous and gets the `[server] anonymous` scopes, which
@@ -11,13 +14,14 @@
 use std::{
     collections::BTreeMap,
     hash::{BuildHasher, RandomState},
-    sync::Arc,
+    sync::{Arc, OnceLock},
+    time::Duration,
 };
 
 use axum::{
     extract::{Path, Request, State},
     http::header,
-    response::{IntoResponse, Redirect, Response},
+    response::{IntoResponse, Response},
 };
 use md5::{Digest, Md5};
 use serde_json::{Value, json};
@@ -69,6 +73,7 @@ pub(crate) async fn rest(State(s): State<Arc<Shared>>, Path(method): Path<String
     let method = method.trim_end_matches(".view").to_string();
     let admin = req.extensions().get::<Admin>().is_some_and(|a| a.0);
     let mut params: Params = serde_urlencoded::from_str(req.uri().query().unwrap_or("")).unwrap_or_default();
+    let fmt = format_of(&params);
     let streaming = matches!(method.as_str(), "stream" | "download");
     let req = if streaming {
         Some(req)
@@ -88,9 +93,26 @@ pub(crate) async fn rest(State(s): State<Arc<Shared>>, Path(method): Path<String
         params.iter().filter(|(k, _)| !matches!(k.as_str(), "t" | "s" | "p")).collect::<Vec<_>>()
     );
     match handle(&s, admin, &method, &params, req).await {
-        Ok(Reply::Json(v)) => envelope(json!({ "status": "ok" }), v),
+        Ok(Reply::Json(v)) => envelope(&fmt, json!({ "status": "ok" }), v),
         Ok(Reply::Raw(r)) => r,
-        Err(e) => envelope(json!({ "status": "failed", "error": { "code": e.code, "message": e.msg } }), json!({})),
+        Err(e) => {
+            envelope(&fmt, json!({ "status": "failed", "error": { "code": e.code, "message": e.msg } }), json!({}))
+        }
+    }
+}
+
+/// The `f` parameter: XML unless the client asks for `json` or `jsonp` (with `callback`).
+enum Format {
+    Xml,
+    Json,
+    Jsonp(String),
+}
+
+fn format_of(p: &Params) -> Format {
+    match one(p, "f").unwrap_or("xml") {
+        "json" => Format::Json,
+        "jsonp" => Format::Jsonp(one(p, "callback").unwrap_or("callback").to_string()),
+        _ => Format::Xml,
     }
 }
 
@@ -99,7 +121,7 @@ enum Reply {
     Raw(Response),
 }
 
-fn envelope(mut base: Value, data: Value) -> Response {
+fn envelope(fmt: &Format, mut base: Value, data: Value) -> Response {
     let obj = base.as_object_mut().expect("object");
     obj.insert("version".into(), json!(API_VERSION));
     obj.insert("type".into(), json!("tapedeck"));
@@ -108,9 +130,65 @@ fn envelope(mut base: Value, data: Value) -> Response {
     if let Value::Object(m) = data {
         obj.extend(m);
     }
-    let mut body = json!({ "subsonic-response": base });
-    strip_nulls(&mut body);
-    ([(header::CONTENT_TYPE, "application/json")], body.to_string()).into_response()
+    strip_nulls(&mut base);
+    match fmt {
+        Format::Json => {
+            ([(header::CONTENT_TYPE, "application/json")], json!({ "subsonic-response": base }).to_string())
+                .into_response()
+        }
+        Format::Jsonp(cb) => {
+            let body = format!("{cb}({});", json!({ "subsonic-response": base }));
+            ([(header::CONTENT_TYPE, "application/javascript")], body).into_response()
+        }
+        Format::Xml => {
+            base["xmlns"] = json!("http://subsonic.org/restapi");
+            let mut out = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>");
+            xml("subsonic-response", &base, &mut out);
+            ([(header::CONTENT_TYPE, "text/xml; charset=utf-8")], out).into_response()
+        }
+    }
+}
+
+/// The Subsonic XML shape from the JSON one: scalars become attributes, objects child elements,
+/// arrays repeated child elements named after the key, arrays of scalars text elements.
+fn xml(name: &str, v: &Value, out: &mut String) {
+    let esc = |s: &str| s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;");
+    let text = |v: &Value| match v {
+        Value::String(s) => s.clone(),
+        other => other.to_string(),
+    };
+    match v {
+        Value::Object(m) => {
+            out.push('<');
+            out.push_str(name);
+            let mut children = vec![];
+            for (k, v) in m {
+                match v {
+                    Value::Null => {}
+                    Value::Object(_) | Value::Array(_) => children.push((k, v)),
+                    scalar => {
+                        out.push_str(&format!(" {k}=\"{}\"", esc(&text(scalar))));
+                    }
+                }
+            }
+            if children.is_empty() {
+                out.push_str("/>");
+                return;
+            }
+            out.push('>');
+            for (k, v) in children {
+                xml(k, v, out);
+            }
+            out.push_str(&format!("</{name}>"));
+        }
+        Value::Array(items) => {
+            for item in items {
+                xml(name, item, out);
+            }
+        }
+        Value::Null => {}
+        scalar => out.push_str(&format!("<{name}>{}</{name}>", esc(&text(scalar)))),
+    }
 }
 
 /// Some Android clients crash on a key that is present but null; leave optional fields out.
@@ -234,8 +312,38 @@ async fn handle(s: &Shared, bearer_admin: bool, method: &str, p: &Params, req: O
             v["entry"] = json!(tracks.iter().filter(|t| playable(t)).map(song_json).collect::<Vec<_>>());
             json!({ "playlist": v })
         }
+        "getMusicDirectory" => {
+            let id = one(p, "id").ok_or_else(|| fail(10, "missing parameter id"))?;
+            let shelf = Shelf::load(s)?;
+            if let Some(artist) = shelf.artists().into_iter().find(|a| a.id == id) {
+                json!({ "directory": { "id": artist.id, "name": artist.name,
+                    "child": artist.albums.iter().map(album_json).collect::<Vec<_>>() } })
+            } else if let Some(album) = shelf.albums().into_iter().find(|a| a.id == id) {
+                json!({ "directory": { "id": album.id, "parent": album.artist_id, "name": album.name,
+                    "child": album.songs.iter().map(|t| song_json(t)).collect::<Vec<_>>() } })
+            } else {
+                return Err(fail(70, "no such directory"));
+            }
+        }
+        "getScanStatus" => json!({ "scanStatus": { "scanning": false, "count": Shelf::load(s)?.tracks.len() } }),
+        // Nothing to say, but a valid answer: clients ask for these right after login and show
+        // the server as broken on a failure.
+        "getArtistInfo" => json!({ "artistInfo": {} }),
+        "getArtistInfo2" => json!({ "artistInfo2": {} }),
+        "getAlbumInfo" | "getAlbumInfo2" => json!({ "albumInfo": {} }),
+        "getTopSongs" => json!({ "topSongs": {} }),
+        "getSimilarSongs" => json!({ "similarSongs": {} }),
+        "getSimilarSongs2" => json!({ "similarSongs2": {} }),
+        "getLyrics" => json!({ "lyrics": {} }),
+        "getLyricsBySongId" => json!({ "lyricsList": {} }),
+        "getInternetRadioStations" => json!({ "internetRadioStations": {} }),
+        "getPodcasts" => json!({ "podcasts": {} }),
+        "getNewestPodcasts" => json!({ "newestPodcasts": {} }),
+        "getShares" => json!({ "shares": {} }),
+        "getBookmarks" => json!({ "bookmarks": {} }),
+        "getPlayQueue" | "savePlayQueue" | "startScan" => json!({}),
         "stream" | "download" => return Ok(Reply::Raw(stream(s, p, req.expect("request kept for streaming")).await)),
-        "getCoverArt" => return Ok(Reply::Raw(cover(s, p)?)),
+        "getCoverArt" => return Ok(Reply::Raw(cover(s, p).await?)),
         "scrobble" => {
             scrobble(s, p).await?;
             json!({})
@@ -489,18 +597,36 @@ fn playlist_json(
 async fn stream(s: &Shared, p: &Params, req: Request) -> Response {
     let id = num::<i64>(p, "id", -1);
     let track = s.app.db().track_by_id(id).ok().flatten();
+    let failed = |code, msg: String| {
+        envelope(&format_of(p), json!({ "status": "failed", "error": { "code": code, "message": msg } }), json!({}))
+    };
     let Some(rel) = track.filter(playable).and_then(|t| t.path) else {
-        return envelope(json!({ "status": "failed", "error": { "code": 70, "message": "no such song" } }), json!({}));
+        return failed(70, "no such song".into());
     };
     let file = s.app.config.library.join(rel);
     match ServeFile::new(&file).oneshot(req).await {
         Ok(res) => res.into_response(),
-        Err(e) => envelope(json!({ "status": "failed", "error": { "code": 0, "message": e.to_string() } }), json!({})),
+        Err(e) => failed(0, e.to_string()),
     }
 }
 
-/// Covers come from the Cover Art Archive by release id: a redirect, nothing stored.
-fn cover(s: &Shared, p: &Params) -> Result<Response, Fail> {
+static HTTP: OnceLock<reqwest::Client> = OnceLock::new();
+
+fn http() -> &'static reqwest::Client {
+    HTTP.get_or_init(|| {
+        reqwest::Client::builder()
+            .user_agent(crate::USER_AGENT)
+            .timeout(Duration::from_secs(20))
+            .build()
+            .expect("reqwest client")
+    })
+}
+
+/// Covers come from the Cover Art Archive by release id, fetched once per size and kept in
+/// `covers/` next to the database (an empty file remembers "none", so the archive is asked
+/// once). Served from here rather than redirected: not every client follows a redirect for
+/// an image, and some cache by URL.
+async fn cover(s: &Shared, p: &Params) -> Result<Response, Fail> {
     let id = one(p, "id").ok_or_else(|| fail(10, "missing parameter id"))?;
     let mbid = match id.parse::<i64>() {
         Ok(n) => s.app.db().track_by_id(n)?.map(|t| t.album_mbid).unwrap_or_default(),
@@ -514,7 +640,30 @@ fn cover(s: &Shared, p: &Params) -> Result<Response, Fail> {
         s if s <= 500 => 500,
         _ => 1200,
     };
-    Ok(Redirect::temporary(&format!("https://coverartarchive.org/release/{mbid}/front-{size}")).into_response())
+    let dir =
+        s.app.config.database_path().parent().map(std::path::Path::to_path_buf).unwrap_or_default().join("covers");
+    let file = dir.join(format!("{mbid}-{size}"));
+    let bytes = match tokio::fs::read(&file).await {
+        Ok(b) => b,
+        Err(_) => {
+            let url = format!("https://coverartarchive.org/release/{mbid}/front-{size}");
+            let res = http().get(&url).send().await.map_err(|e| fail(0, format!("cover art archive: {e}")))?;
+            let bytes = match res.status() {
+                st if st.is_success() => res.bytes().await.map_err(|e| fail(0, e.to_string()))?.to_vec(),
+                reqwest::StatusCode::NOT_FOUND => vec![],
+                st => return Err(fail(0, format!("cover art archive: HTTP {st}"))),
+            };
+            let _ = tokio::fs::create_dir_all(&dir).await;
+            let _ = tokio::fs::write(&file, &bytes).await;
+            bytes
+        }
+    };
+    if bytes.is_empty() {
+        return Err(fail(70, "no cover art for this release"));
+    }
+    let content_type = if bytes.starts_with(b"\x89PNG") { "image/png" } else { "image/jpeg" };
+    Ok(([(header::CONTENT_TYPE, content_type), (header::CACHE_CONTROL, "public, max-age=604800")], bytes)
+        .into_response())
 }
 
 /// `submission=false` is "playing now", anything else a listen; both go through `td listen`,
@@ -553,6 +702,23 @@ mod tests {
 
     fn params(pairs: &[(&str, &str)]) -> Params {
         pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn xml_follows_the_subsonic_shape() {
+        let v = json!({ "status": "ok", "artists": { "ignoredArticles": "", "index": [
+            { "name": "Z", "artist": [{ "id": "a1", "name": "Zed & Co", "albumCount": 2 }] } ] },
+            "user": { "username": "x", "folder": [1, 2] }, "license": { "valid": true }, "nothing": null });
+        let mut out = String::new();
+        xml("subsonic-response", &v, &mut out);
+        assert_eq!(
+            out,
+            "<subsonic-response status=\"ok\"><artists ignoredArticles=\"\"><index name=\"Z\">\
+             <artist albumCount=\"2\" id=\"a1\" name=\"Zed &amp; Co\"/></index></artists>\
+             <license valid=\"true\"/><user username=\"x\"><folder>1</folder><folder>2</folder></user></subsonic-response>"
+        );
+        assert!(matches!(format_of(&params(&[])), Format::Xml));
+        assert!(matches!(format_of(&params(&[("f", "json")])), Format::Json));
     }
 
     #[test]
