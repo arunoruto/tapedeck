@@ -10,6 +10,7 @@ pub mod library;
 pub mod listenbrainz;
 pub mod m3u;
 pub mod musicbrainz;
+pub mod player;
 pub mod render;
 pub mod request;
 pub mod sync;

@@ -121,7 +121,8 @@ What the module does:
 
 - Runs `td daemon --config /etc/tapedeck/config.toml` as user and group `tapedeck` (both
   created; override `user`/`group` to use existing ones), with `extraGroups` as supplementary
-  groups. `package`, `ytdlpPackage` and `ffmpegPackage` work as in the Home Manager module.
+  groups. `package`, `ytdlpPackage` and `ffmpegPackage` work as in the Home Manager module
+  (no mpv on a server).
 - `database` defaults to `/var/lib/tapedeck/tapedeck.db` and `socket` to
   `/run/tapedeck/tapedeck.sock`; both directories are mode 0770 and the unit's umask is 0002,
   so members of the group can run `td status` or `td tui` and have their actions go through
@@ -215,6 +216,18 @@ Plex playlist is named after the playlist kind (`Weekly Jams`), so it is replace
 week rather than piling up. The m3u8 on disk (`playlists/weekly-jams.m3u8`) follows the same
 rule; the week it replaces is kept under `playlists/archive/weekly-jams/2026-w41.m3u8`. Tracks
 that leave a playlist stay in the library.
+
+## Playback: `[player]`
+
+The TUI plays through mpv: `Enter` on a track plays it and queues the rest of the list (the
+album in the Library tab, the playlist in the Playlists tab), `space` pauses, `n`/`N` skip,
+`,`/`.` seek 10 s, `+`/`-` change the volume, `x` stops. A line above the help shows what is
+playing with a position bar. In remote mode the audio is streamed from the daemon.
+
+```toml
+[player]
+mpv_bin = "mpv"       # default; the Home Manager wrapper puts its mpvPackage on PATH
+```
 
 ## Remote use: `[server]` and `[remote]`
 

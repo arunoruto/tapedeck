@@ -79,6 +79,8 @@ binary is called `td`.
   MusicBrainz recording and checked again after the download, so you get the album audio
   rather than the music video with the two-minute intro.
 - **Plex sync** that scans the library, matches files and recreates the playlist.
+- **Plays, too**: `Enter` in the TUI plays a track and queues the rest through mpv, locally or
+  streamed from the NAS.
 - **Use it from your laptop**: the daemon serves its commands and the audio over HTTP behind a
   token, so `td tui` on another machine browses and controls the NAS.
 - **Song requests from Telegram**: send a link or "Artist - Title", get the proper recording

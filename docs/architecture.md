@@ -20,6 +20,7 @@ src/
   theme.rs         TUI colours from TOML; built-ins in themes/
   external.rs      read-only external libraries (Lidarr): index, dedupe, reconcile
   api.rs           HTTP API (POST /cmd, GET /stream) and the client side of [remote]
+  player.rs        mpv over JSON IPC for the TUI
   request.rs       song requests: analyse a link, judge, fetch, file, Requests playlist
   telegram.rs      the Telegram bot (long polling) on top of request.rs
   render.rs        tables / key-value lines for human output
@@ -174,6 +175,14 @@ carries the paths of files this run moved); `td remote backup` does only that, a
 Long loops (import's resolving pass, refile) report a `progress` event per item. On a terminal
 it overwrites itself on one line; in a pipe or the journal it is dropped; with `--json` it is one
 more NDJSON line, so a script can show its own counter.
+
+## Playback
+
+`player.rs` drives mpv over its JSON IPC socket: `mpv --no-video --idle` is started on the
+first play with `--input-ipc-server`, given file paths (local) or `/stream/<id>` URLs (remote,
+with the bearer header fixed at launch), and polled for position and state every other TUI
+tick. The queue is tapedeck's, so the bar shows "Artist – Title" rather than a URL. Nothing
+decodes audio in tapedeck; mpv handles formats, gapless playback and prefetching.
 
 ## Remote use
 

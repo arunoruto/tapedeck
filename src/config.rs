@@ -32,6 +32,8 @@ pub struct Config {
     #[serde(default)]
     pub download: Download,
     #[serde(default)]
+    pub player: PlayerCfg,
+    #[serde(default)]
     pub sync: Sync,
     #[serde(default)]
     pub external: External,
@@ -62,6 +64,24 @@ pub struct Remote {
     pub url: Option<String>,
     pub token: Option<String>,
     pub token_file: Option<PathBuf>,
+}
+
+/// Playback in the TUI, through mpv.
+#[derive(Deserialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct PlayerCfg {
+    #[serde(default = "default_mpv")]
+    pub mpv_bin: String,
+}
+
+impl Default for PlayerCfg {
+    fn default() -> Self {
+        Self { mpv_bin: default_mpv() }
+    }
+}
+
+fn default_mpv() -> String {
+    "mpv".into()
 }
 
 #[derive(Deserialize, Clone, Debug, Default)]

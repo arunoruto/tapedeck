@@ -53,3 +53,6 @@ section = "Music"
 # [remote]                                          # on a laptop: use that daemon instead of a local database
 # url = "http://100.64.0.5:7878"
 # token_file = "/home/you/.config/tapedeck/api-token"
+
+# [player]
+# mpv_bin = "mpv"                                   # playback in the TUI

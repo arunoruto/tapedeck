@@ -21,12 +21,14 @@ use tokio::{runtime::Handle, sync::mpsc, task::JoinHandle};
 use serde::de::DeserializeOwned;
 
 use crate::{
-    Event as TdEvent,
+    Event as TdEvent, api,
     app::remote_title,
     cli::{Command, RemoteCmd},
     config::Config,
     daemon,
     db::{Playlist, Track},
+    external::present,
+    player::{self, Player},
     render,
     sync::RemotePlaylist,
     theme::Theme,
@@ -100,6 +102,9 @@ struct Tui {
     /// The last log line is a progress counter and gets replaced by the next one.
     progressing: bool,
     ticks: usize,
+    /// mpv, started on the first play.
+    player: Option<Player>,
+    now: player::Status,
     /// Library tab. The three columns are derived from `all` on every draw, see `shelf`.
     all: Vec<Track>,
     artists: ListState,
@@ -134,6 +139,8 @@ pub async fn run(config: Config) -> Result<()> {
         log: vec![],
         progressing: false,
         ticks: 0,
+        player: None,
+        now: player::Status::default(),
         all: vec![],
         artists: ListState::default().with_selected(Some(0)),
         albums: ListState::default().with_selected(Some(0)),
@@ -365,6 +372,11 @@ impl Tui {
     fn event_loop(&mut self, terminal: &mut ratatui::DefaultTerminal) -> Result<()> {
         loop {
             self.poll_job()?;
+            if let Some(p) = &mut self.player
+                && self.ticks.is_multiple_of(2)
+            {
+                self.now = p.status();
+            }
             self.ticks += 1;
             terminal.draw(|f| self.draw(f))?;
             if !event::poll(Duration::from_millis(250))? {
@@ -461,13 +473,23 @@ impl Tui {
             }
             KeyCode::BackTab | KeyCode::Char('[') => self.set_tab(Tab::Playlists),
             // Enter on the last pane (a track) opens its details.
-            KeyCode::Enter | KeyCode::Char('i') if self.pane + 1 == self.panes() || code == KeyCode::Char('i') => {
+            KeyCode::Char('i') => {
                 if let Some(rows) = self.selected_track().map(|t| track_info(&self.config, t)) {
                     self.mode = Mode::Info(rows);
                 } else {
                     self.status = "no track selected".into();
                 }
             }
+            // Enter on the last pane plays the selection and queues what follows it.
+            KeyCode::Enter if self.pane + 1 == self.panes() => self.play_from_selection(),
+            KeyCode::Char(' ') => self.player_do(|p| p.toggle_pause()),
+            KeyCode::Char('n') => self.player_do(|p| p.play_next()),
+            KeyCode::Char('N') => self.player_do(|p| p.play_prev()),
+            KeyCode::Char(',') => self.player_do(|p| p.seek(-10.0)),
+            KeyCode::Char('.') => self.player_do(|p| p.seek(10.0)),
+            KeyCode::Char('+') | KeyCode::Char('=') => self.player_do(|p| p.volume(5)),
+            KeyCode::Char('-') => self.player_do(|p| p.volume(-5)),
+            KeyCode::Char('x') => self.player_do(|p| p.stop()),
             KeyCode::Left | KeyCode::Char('h') => self.pane = self.pane.saturating_sub(1),
             KeyCode::Right | KeyCode::Char('l') | KeyCode::Enter => self.pane = (self.pane + 1).min(self.panes() - 1),
             KeyCode::Char('r') => {
@@ -573,6 +595,91 @@ impl Tui {
         Ok(false)
     }
 
+    /// The selected track and everything after it in the current list, as mpv items.
+    fn play_from_selection(&mut self) {
+        let list: Vec<Track> = match self.tab {
+            Tab::Library => {
+                let shelf = self.shelf();
+                let from = self.songs.selected().unwrap_or(0);
+                shelf.songs.iter().skip(from).map(|t| (*t).clone()).collect()
+            }
+            Tab::Playlists => {
+                let from = self.right.selected().unwrap_or(0);
+                self.visible().into_iter().skip(from).cloned().collect()
+            }
+        };
+        let items: Vec<(i64, String, String)> = list
+            .iter()
+            .filter(|t| present(t))
+            .filter_map(|t| {
+                let (url, _) = api::stream_url(&self.config, t.id, t.path.as_deref())?;
+                Some((t.id, format!("{} – {}", t.artist, t.title), url))
+            })
+            .collect();
+        if items.is_empty() {
+            self.status = "nothing playable here".into();
+            return;
+        }
+        if self.player.is_none() {
+            let header = api::remote(&self.config).ok().map(|(_, token)| format!("Authorization: Bearer {token}"));
+            match Player::start(&self.config.player.mpv_bin, header.as_deref()) {
+                Ok(p) => self.player = Some(p),
+                Err(e) => {
+                    tracing::warn!("player: {e:#}");
+                    self.status = format!("{e:#}");
+                    return;
+                }
+            }
+        }
+        let n = items.len();
+        self.player_do(|p| p.play(items));
+        if self.status.is_empty() {
+            self.status = format!("playing {n} tracks");
+        }
+    }
+
+    fn player_do(&mut self, f: impl FnOnce(&mut Player) -> Result<()>) {
+        match &mut self.player {
+            Some(p) => {
+                if let Err(e) = f(p) {
+                    self.status = format!("mpv: {e:#}");
+                } else {
+                    self.status.clear();
+                }
+            }
+            None => self.status = "nothing is playing; Enter on a track starts".into(),
+        }
+    }
+
+    /// One line: ▶ Artist – Title  1:23 ━━━━──── 3:45  vol 100
+    fn draw_player(&self, f: &mut Frame, area: Rect) {
+        let th = &self.theme;
+        let Some(p) = &self.player else {
+            f.render_widget(Paragraph::new(Span::styled(" ▷ nothing playing", Style::new().fg(th.muted))), area);
+            return;
+        };
+        let s = &self.now;
+        if s.idle {
+            f.render_widget(Paragraph::new(Span::styled(" ▷ queue finished", Style::new().fg(th.muted))), area);
+            return;
+        }
+        let icon = if s.paused { "⏸" } else { "▶" };
+        let left = format!(" {icon} {}  {} ", s.label, player::mmss(s.pos));
+        let right = format!(" {}  vol {}", player::mmss(s.duration), p.volume);
+        let width = area.width as usize;
+        let room = width.saturating_sub(left.chars().count() + right.chars().count()).max(4);
+        let done = if s.duration > 0.0 { ((s.pos / s.duration) * room as f64) as usize } else { 0 };
+        let gauge = format!("{}{}", "━".repeat(done.min(room)), "─".repeat(room.saturating_sub(done)));
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(left, Style::new().fg(th.accent).bold()),
+                Span::styled(gauge, Style::new().fg(th.accent)),
+                Span::styled(right, Style::new().fg(th.muted)),
+            ])),
+            area,
+        );
+    }
+
     fn track_ref(&mut self) -> Option<(i64, String)> {
         match self.selected_track() {
             Some(t) => Some((t.id, format!("{} - {}", t.artist, t.title))),
@@ -616,10 +723,16 @@ impl Tui {
         let th = self.theme.clone();
         // Theme text colour everywhere; the terminal's own background stays.
         f.render_widget(Block::new().style(Style::new().fg(th.text)), f.area());
-        let [header, body, detail, help] =
-            Layout::vertical([Constraint::Length(4), Constraint::Min(5), Constraint::Length(5), Constraint::Length(1)])
-                .areas(f.area());
+        let [header, body, detail, bar, help] = Layout::vertical([
+            Constraint::Length(4),
+            Constraint::Min(5),
+            Constraint::Length(5),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .areas(f.area());
         self.draw_header(f, header);
+        self.draw_player(f, bar);
         match self.tab {
             Tab::Library => self.draw_library(f, body),
             Tab::Playlists => {
@@ -660,12 +773,19 @@ impl Tui {
                 Line::from(vec![dim(" "), key("Esc"), dim("/"), key("Enter"), dim("/"), key("i"), dim(" close ")])
             }
             Mode::Normal => {
+                // The status message first, so a long key list never pushes it off screen.
                 let mut spans = vec![dim(" ")];
+                if !self.status.is_empty() {
+                    spans.push(Span::styled(format!("{}  ", self.status), Style::new().fg(th.warning)));
+                }
                 for (i, (k, what)) in [
                     ("Tab/[]", "tabs"),
                     ("hjkl", "move"),
                     ("^D/^U", "half page"),
                     ("/", "filter"),
+                    ("Enter", "play"),
+                    ("space", "pause"),
+                    ("n/N", "next/prev"),
                     ("i", "info"),
                     ("S", "sync"),
                     ("R", "re-download"),
@@ -685,7 +805,6 @@ impl Tui {
                     spans.push(key(k));
                     spans.push(dim(&format!(" {what}")));
                 }
-                spans.push(Span::styled(format!("  {}", self.status), Style::new().fg(th.warning)));
                 Line::from(spans)
             }
         };

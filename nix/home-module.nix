@@ -7,7 +7,7 @@ let
   # only rebuilds the thin wrapper; the Rust build underneath stays a cache hit.
   package =
     if cfg.package ? override then
-      cfg.package.override { yt-dlp = cfg.ytdlpPackage; ffmpeg-headless = cfg.ffmpegPackage; }
+      cfg.package.override { yt-dlp = cfg.ytdlpPackage; ffmpeg-headless = cfg.ffmpegPackage; mpv = cfg.mpvPackage; }
     else
       cfg.package;
 in
@@ -23,6 +23,13 @@ in
 
     ffmpegPackage = lib.mkPackageOption pkgs "ffmpeg-headless" {
       extraDescription = "Only needs the ffmpeg binary; the headless build is enough.";
+    };
+
+    mpvPackage = lib.mkOption {
+      type = lib.types.nullOr lib.types.package;
+      default = pkgs.mpv;
+      defaultText = lib.literalExpression "pkgs.mpv";
+      description = "mpv for playback in the TUI; null to leave it out (a headless install).";
     };
 
     settings = lib.mkOption {
