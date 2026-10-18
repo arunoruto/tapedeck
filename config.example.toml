@@ -47,12 +47,13 @@ section = "Music"
 # allowed_users = [123456789]
 
 # [server]                                          # HTTP API for td on other machines
-# listen = "100.64.0.5:7878"
-# token_file = "/run/secrets/tapedeck/api-token"
+# listen = "0.0.0.0:7878"
+# anonymous = ["read", "stream", "listen"]          # without a token; add "request" and/or "sync" if you like
+# token_file = "/run/secrets/tapedeck/api-token"    # optional admin token
 
 # [remote]                                          # on a laptop: use that daemon instead of a local database
-# url = "http://100.64.0.5:7878"
-# token_file = "/home/you/.config/tapedeck/api-token"
+# url = "http://sado:7878"
+# token_file = "/home/you/.config/tapedeck/api-token"   # only for admin commands
 
 # [player]
 # mpv_bin = "mpv"                                   # playback in the TUI

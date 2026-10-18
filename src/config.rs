@@ -53,8 +53,18 @@ pub struct Config {
 pub struct Server {
     /// `host:port`, e.g. a Tailscale address. Nothing is served without it.
     pub listen: Option<String>,
+    /// Admin token: with it a client may run everything. Without one configured, only the
+    /// anonymous scopes are reachable over HTTP at all.
     pub token: Option<String>,
     pub token_file: Option<PathBuf>,
+    /// What a client without the token may do: "read" (status, search, listings), "stream"
+    /// (the audio), "listen" (scrobbles), plus optionally "request" and "sync".
+    #[serde(default = "default_anonymous")]
+    pub anonymous: Vec<String>,
+}
+
+fn default_anonymous() -> Vec<String> {
+    ["read", "stream", "listen"].map(String::from).to_vec()
 }
 
 #[derive(Deserialize, Clone, Debug, Default)]
@@ -248,11 +258,10 @@ impl Config {
     pub fn parse(text: &str) -> Result<Self> {
         let cfg: Config = toml::from_str(text).context("parsing config")?;
         crate::library::validate_template(&cfg.path_template)?;
-        if cfg.server.listen.is_some() && cfg.server.token.is_none() && cfg.server.token_file.is_none() {
-            bail!("[server] listen needs token or token_file");
-        }
-        if cfg.remote.url.is_some() && cfg.remote.token.is_none() && cfg.remote.token_file.is_none() {
-            bail!("[remote] url needs token or token_file");
+        for scope in &cfg.server.anonymous {
+            if !matches!(scope.as_str(), "read" | "stream" | "listen" | "request" | "sync") {
+                bail!("[server] anonymous: unknown scope {scope:?} (read, stream, listen, request, sync)");
+            }
         }
         if !matches!(cfg.external.prefer_external.as_str(), "auto" | "ask" | "never") {
             bail!("external.prefer_external must be auto, ask or never");

@@ -24,12 +24,38 @@ use crate::{App, Event, cli::Command, config::Config};
 
 struct Shared {
     app: Arc<App>,
-    token: String,
+    /// The admin token, when one is configured.
+    token: Option<String>,
+    anonymous: Vec<String>,
 }
 
-pub async fn serve(app: Arc<App>, listen: &str, token: String) -> Result<()> {
+/// Whether this request carries the admin token.
+#[derive(Clone, Copy)]
+struct Admin(bool);
+
+/// What a command needs: "read", "stream", "listen", "request", "sync", or "admin" (everything else).
+pub fn scope_of(cmd: &Command) -> &'static str {
+    match cmd {
+        Command::Status
+        | Command::Search { .. }
+        | Command::Playlists
+        | Command::Tracks
+        | Command::PlaylistTracks { .. }
+        | Command::RemotePlaylists
+        | Command::Artists
+        | Command::Artist { folder: None, unpin: false, .. } => "read",
+        Command::Request { .. } => "request",
+        Command::Sync { .. } => "sync",
+        _ => "admin",
+    }
+}
+
+pub async fn serve(app: Arc<App>, listen: &str, token: Option<String>, anonymous: Vec<String>) -> Result<()> {
     let addr: SocketAddr = listen.parse().with_context(|| format!("server.listen {listen:?} is not host:port"))?;
-    let shared = Arc::new(Shared { app, token });
+    if token.is_none() {
+        tracing::info!("api: no [server] token; only the anonymous scopes {anonymous:?} are reachable over HTTP");
+    }
+    let shared = Arc::new(Shared { app, token, anonymous });
     let router = Router::new()
         .route("/cmd", post(cmd))
         .route("/stream/{id}", get(stream))
@@ -42,24 +68,53 @@ pub async fn serve(app: Arc<App>, listen: &str, token: String) -> Result<()> {
     Ok(())
 }
 
-async fn auth(State(s): State<Arc<Shared>>, req: Request, next: Next) -> Response {
-    let ok = req
+/// A wrong token is refused outright; no token means the anonymous scopes.
+async fn auth(State(s): State<Arc<Shared>>, mut req: Request, next: Next) -> Response {
+    let sent = req
         .headers()
         .get(header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
-        .is_some_and(|t| t == s.token);
-    if ok { next.run(req).await } else { (StatusCode::UNAUTHORIZED, "bad or missing bearer token").into_response() }
+        .map(str::to_string);
+    let admin = match (&sent, &s.token) {
+        (Some(t), Some(want)) if t == want => true,
+        (Some(_), _) => return (StatusCode::UNAUTHORIZED, "bad bearer token").into_response(),
+        (None, _) => false,
+    };
+    req.extensions_mut().insert(Admin(admin));
+    next.run(req).await
+}
+
+fn allowed(s: &Shared, admin: bool, scope: &str) -> bool {
+    admin || s.anonymous.iter().any(|a| a == scope)
+}
+
+fn forbidden(s: &Shared, what: &str) -> Response {
+    let hint = if s.token.is_some() {
+        "needs the API token; run it on the server or set remote.token_file"
+    } else {
+        "needs the API token, and this server has none configured; run it on the server"
+    };
+    (StatusCode::FORBIDDEN, format!("`{what}` {hint}")).into_response()
 }
 
 /// Body: one `Command` as JSON. Response: `Event`s as NDJSON, streamed as they happen.
-async fn cmd(State(s): State<Arc<Shared>>, body: String) -> Response {
+async fn cmd(
+    State(s): State<Arc<Shared>>,
+    axum::Extension(Admin(admin)): axum::Extension<Admin>,
+    body: String,
+) -> Response {
     let cmd: Command = match serde_json::from_str(&body) {
         Ok(c) => c,
         Err(e) => return (StatusCode::BAD_REQUEST, format!("bad command: {e}")).into_response(),
     };
     if matches!(cmd, Command::Daemon | Command::Tui) {
         return (StatusCode::BAD_REQUEST, "that command runs in the foreground").into_response();
+    }
+    if !allowed(&s, admin, scope_of(&cmd)) {
+        let name =
+            serde_json::to_value(&cmd).ok().and_then(|v| v["cmd"].as_str().map(str::to_string)).unwrap_or_default();
+        return forbidden(&s, &name);
     }
     let (tx, rx) = mpsc::channel::<Event>(64);
     let app = s.app.clone();
@@ -75,6 +130,10 @@ async fn cmd(State(s): State<Arc<Shared>>, body: String) -> Response {
 /// The track's file, own or external, with Range support (tower-http's ServeFile does the
 /// headers, the partial reads and the content type).
 async fn stream(State(s): State<Arc<Shared>>, Path(id): Path<i64>, req: Request) -> Response {
+    let admin = req.extensions().get::<Admin>().map(|a| a.0).unwrap_or(false);
+    if !allowed(&s, admin, "stream") {
+        return forbidden(&s, "stream");
+    }
     let track = match s.app.db().track_by_id(id) {
         Ok(Some(t)) => t,
         _ => return (StatusCode::NOT_FOUND, "no such track").into_response(),
@@ -91,13 +150,11 @@ async fn stream(State(s): State<Arc<Shared>>, Path(id): Path<i64>, req: Request)
 pub async fn forward_remote(cfg: &Config, cmd: Command, tx: mpsc::Sender<Event>) -> Result<()> {
     let (url, token) = remote(cfg)?;
     let http = reqwest::Client::builder().user_agent(crate::USER_AGENT).build()?;
-    let res = http
-        .post(format!("{url}/cmd"))
-        .bearer_auth(token)
-        .body(serde_json::to_string(&cmd)?)
-        .send()
-        .await
-        .with_context(|| format!("reaching {url}"))?;
+    let mut req = http.post(format!("{url}/cmd")).body(serde_json::to_string(&cmd)?);
+    if let Some(t) = token {
+        req = req.bearer_auth(t);
+    }
+    let res = req.send().await.with_context(|| format!("reaching {url}"))?;
     if !res.status().is_success() {
         bail!("{url}: {} {}", res.status(), res.text().await.unwrap_or_default());
     }
@@ -120,17 +177,16 @@ pub async fn forward_remote(cfg: &Config, cmd: Command, tx: mpsc::Sender<Event>)
     Ok(())
 }
 
-/// `(url without trailing slash, token)` when a remote is configured.
-pub fn remote(cfg: &Config) -> Result<(String, String)> {
+/// `(url without trailing slash, token if any)` when a remote is configured.
+pub fn remote(cfg: &Config) -> Result<(String, Option<String>)> {
     let url = cfg.remote.url.clone().context("no [remote] url configured")?;
-    let token = cfg.remote.token.clone().context("[remote] needs token or token_file")?;
-    Ok((url.trim_end_matches('/').to_string(), token))
+    Ok((url.trim_end_matches('/').to_string(), cfg.remote.token.clone()))
 }
 
 /// Where a player fetches a track from: the remote stream URL, or the local file.
 pub fn stream_url(cfg: &Config, track_id: i64, local_path: Option<&str>) -> Option<(String, Option<String>)> {
     if let Ok((url, token)) = remote(cfg) {
-        return Some((format!("{url}/stream/{track_id}"), Some(token)));
+        return Some((format!("{url}/stream/{track_id}"), token));
     }
     local_path.map(|p| (cfg.library.join(p).to_string_lossy().into_owned(), None))
 }

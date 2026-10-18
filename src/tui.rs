@@ -621,7 +621,10 @@ impl Tui {
             return;
         }
         if self.player.is_none() {
-            let header = api::remote(&self.config).ok().map(|(_, token)| format!("Authorization: Bearer {token}"));
+            let header = api::remote(&self.config)
+                .ok()
+                .and_then(|(_, token)| token)
+                .map(|t| format!("Authorization: Bearer {t}"));
             match Player::start(&self.config.player.mpv_bin, header.as_deref()) {
                 Ok(p) => self.player = Some(p),
                 Err(e) => {

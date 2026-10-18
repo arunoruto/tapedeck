@@ -188,7 +188,10 @@ decodes audio in tapedeck; mpv handles formats, gapless playback and prefetching
 
 `api.rs`. `[server] listen` adds an HTTP face to the daemon with the socket's protocol:
 `POST /cmd` takes a `Command` and streams `Event`s as NDJSON, `GET /stream/<id>` serves a
-track's file with Range support (tower-http's `ServeFile`), both behind a bearer token. On a
+track's file with Range support (tower-http's `ServeFile`). A bearer token, when configured,
+grants everything; without it a request gets the `[server] anonymous` scopes (`scope_of` maps
+each command to read, request, sync or admin), and a command outside them is a `403` naming
+what it needs. On a
 client, `[remote] url` makes `daemon::dispatch` send every command there instead of the socket
 or an in-process `App`, and the TUI loads its data through commands (`tracks`, `playlists`,
 `playlist-tracks`, `remote-playlists`, hidden from `--help`) rather than opening the database,

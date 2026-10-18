@@ -107,10 +107,11 @@ pub async fn serve(cfg: Config) -> Result<()> {
     }
 
     if let Some(listen) = app.config.server.listen.clone() {
-        let token = app.config.server.token.clone().context("[server] token")?;
+        let token = app.config.server.token.clone();
+        let anonymous = app.config.server.anonymous.clone();
         let api_app = app.clone();
         tokio::spawn(async move {
-            if let Err(e) = crate::api::serve(api_app, &listen, token).await {
+            if let Err(e) = crate::api::serve(api_app, &listen, token, anonymous).await {
                 tracing::error!("api stopped: {e:#}");
             }
         });
