@@ -52,16 +52,29 @@ pub fn present(t: &Track) -> bool {
 pub fn find_external<'a>(index: &'a [ExternalFile], t: &Track) -> Option<&'a ExternalFile> {
     let by_id = index.iter().find(|e| e.recording_mbid.as_deref() == Some(t.recording_mbid.as_str()));
     by_id.or_else(|| {
-        let artist = strip_feat(&t.artist).to_lowercase();
-        let title = strip_feat(&t.title).to_lowercase();
+        let artist = norm(&t.artist);
+        let title = norm(&t.title);
         let len = t.duration_ms?;
         index.iter().find(|e| {
-            let a = strip_feat(&e.artist).to_lowercase();
+            let a = norm(&e.artist);
             (a.starts_with(&artist) || artist.starts_with(&a))
-                && strip_feat(&e.title).to_lowercase() == title
+                && norm(&e.title) == title
                 && e.duration_ms.is_some_and(|ms| (ms - len).abs() <= 5_000)
         })
     })
+}
+
+/// Lowercase, feat. stripped, "&" as "and", every run of punctuation or dash collapsed to one
+/// space: Lidarr's "When You're Gone" meets MusicBrainz's "When You’re Gone", "alt‐J" meets
+/// "alt-J". Diacritics are kept as they are.
+pub(crate) fn norm(s: &str) -> String {
+    strip_feat(s)
+        .to_lowercase()
+        .replace('&', " and ")
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|t| !t.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 impl App {
@@ -307,12 +320,15 @@ mod tests {
         assert_eq!(find_external(&index, &t).unwrap().path, "/r/a.flac", "id wins even when lengths differ");
         let t = Track {
             recording_mbid: "x".into(),
-            artist: "Linkin Park feat. Someone".into(),
-            title: "Faint".into(),
+            artist: "LINKIN PARK feat. Someone".into(),
+            title: "Faint!".into(),
             duration_ms: Some(165_000),
             ..Track::default()
         };
-        assert_eq!(find_external(&index, &t).unwrap().path, "/r/b.mp3");
+        assert_eq!(find_external(&index, &t).unwrap().path, "/r/b.mp3", "case and punctuation don't matter");
+        assert_eq!(norm("When You’re Gone"), norm("When You're Gone"));
+        assert_eq!(norm("Simon & Garfunkel"), norm("Simon and Garfunkel"));
+        assert_eq!(norm("alt‐J"), "alt j");
         let t = Track {
             recording_mbid: "x".into(),
             artist: "Linkin Park".into(),
