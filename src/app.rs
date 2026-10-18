@@ -106,6 +106,7 @@ impl App {
                 // Two statements: two guards in one expression would deadlock the std Mutex.
                 let external_files = self.db().external_count()?;
                 let scanned = self.db().meta_get("external_scanned_at")?;
+                let unconfirmed = self.db().unconfirmed_requests()?;
                 data(
                     tx,
                     json!({
@@ -114,6 +115,7 @@ impl App {
                         "shared_paths": shared.len(),
                         "external_files": external_files,
                         "external_scanned_at": scanned,
+                        "requests_unconfirmed": unconfirmed,
                     }),
                 )
                 .await

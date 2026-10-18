@@ -105,7 +105,7 @@ impl Bot {
                 return self.reopen(chat, reply).await;
             }
             if text.starts_with('/') {
-                let help = "Send me a link (YouTube, YouTube Music, …) or \"Artist - Title\". I find the recording, fetch the best audio and add it to this year's Requests playlist. React 👎 or reply /wrong if I picked the wrong song.";
+                let help = "Send me a link (YouTube, YouTube Music, …) or \"Artist - Title\". I find the recording, fetch the best audio and add it to this year's Requests playlist. React 👍 (or tap Correct) when it's right, 👎 or reply /wrong when I picked the wrong song.";
                 self.send(chat, help, None, None).await?;
                 return Ok(());
             }
@@ -127,10 +127,16 @@ impl Bot {
             if !self.allowed(&r["user"]) {
                 return Ok(());
             }
-            let thumbs_down =
-                r["new_reaction"].as_array().into_iter().flatten().any(|e| e["emoji"].as_str() == Some("👎"));
-            if thumbs_down && let (Some(chat), Some(mid)) = (r["chat"]["id"].as_i64(), r["message_id"].as_i64()) {
-                return self.reopen(chat, mid).await;
+            let has = |emoji: &str| {
+                r["new_reaction"].as_array().into_iter().flatten().any(|e| e["emoji"].as_str() == Some(emoji))
+            };
+            if let (Some(chat), Some(mid)) = (r["chat"]["id"].as_i64(), r["message_id"].as_i64()) {
+                if has("👎") {
+                    return self.reopen(chat, mid).await;
+                }
+                if has("👍") {
+                    return self.confirm(chat, mid).await;
+                }
             }
         }
         Ok(())
@@ -189,11 +195,17 @@ impl Bot {
                 } else {
                     format!("✅ Added: {what}\nOn {}.", o.playlist)
                 };
-                let buttons = json!([[{ "text": "👎 Wrong song", "callback_data": "w" }, { "text": "↩️ Undo", "callback_data": "u" }]]);
-                let mid = self.send(chat, &text, reply_to, Some(buttons)).await?;
+                let trio = |mid: &str| {
+                    json!([[
+                        { "text": "👍 Correct", "callback_data": format!("k:{mid}") },
+                        { "text": "👎 Wrong song", "callback_data": format!("w:{mid}") },
+                        { "text": "↩️ Undo", "callback_data": format!("u:{mid}") },
+                    ]])
+                };
+                let mid = self.send(chat, &text, reply_to, Some(trio("0"))).await?;
                 // The callback data can't carry the message id before the message exists; the
                 // buttons are rewritten with it now.
-                self.rewire(chat, mid, json!([[{ "text": "👎 Wrong song", "callback_data": format!("w:{mid}") }, { "text": "↩️ Undo", "callback_data": format!("u:{mid}") }]])).await?;
+                self.rewire(chat, mid, trio(&mid.to_string())).await?;
                 self.pending.lock().await.insert(mid, Pending { chat_id: chat, analysis, track_id: Some(t.id) });
             }
             Err(e) => {
@@ -253,6 +265,10 @@ impl Bot {
                 self.pending.lock().await.insert(mid, p);
                 self.reopen(chat, mid).await?;
             }
+            "k" => {
+                self.pending.lock().await.insert(mid, p);
+                self.confirm(chat, mid).await?;
+            }
             "c" | "v" => {
                 let choice = match kind {
                     "v" => Choice::ThisVideo,
@@ -270,6 +286,24 @@ impl Bot {
                 self.report(chat, None, p.analysis, outcome).await?;
             }
             _ => {}
+        }
+        Ok(())
+    }
+
+    /// 👍 / Correct: settle the request; the message loses its buttons so it can't be undone by
+    /// a stray tap, and the row remembers the confirmation.
+    async fn confirm(&self, chat: i64, mid: i64) -> Result<()> {
+        let p = self.pending.lock().await.remove(&mid);
+        let Some(p) = p else {
+            self.send(chat, "Nothing open on that message (the daemon restarted?).", Some(mid), None).await?;
+            return Ok(());
+        };
+        if let Some(id) = p.track_id
+            && let Ok(()) = self.app.confirm_request(id)
+            && let Ok(Some(t)) = self.app.db().track_by_id(id)
+        {
+            let len = t.duration_ms.map(|ms| format!(", {}:{:02}", ms / 60000, (ms / 1000) % 60)).unwrap_or_default();
+            self.edit(chat, mid, &format!("✅ Confirmed: {} – {} ({}{len})", t.artist, t.title, t.album)).await?;
         }
         Ok(())
     }

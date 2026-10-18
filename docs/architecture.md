@@ -188,8 +188,8 @@ Fulfilling inserts the recording's row, downloads through the usual YouTube-Musi
 `requests-<year>` playlist, which is an ordinary playlist kind, so it gets its own current
 m3u8 and Plex playlist and the sync's archive logic never touches it. "Exactly this video"
 files the link as sent under a `youtube:<id>` recording id; refile skips such rows. The bot
-keeps open questions in memory keyed by its own message ids; buttons, 👎 reactions and
-`/wrong` replies all route back to them. Every fulfilment runs under the daemon's busy lock.
+keeps open questions in memory keyed by its own message ids; buttons, 👍/👎 reactions and
+`/wrong` replies all route back to them, and a confirmation is written to `requests`. Every fulfilment runs under the daemon's busy lock.
 
 ## External libraries
 
@@ -257,6 +257,7 @@ albums          id, mbid, artist_id, title, year
 tracks          id, recording_mbid, album_id, title, artist, artist_mbid, track_no, duration_ms,
                 path, status, source_url, error
 playlists       id, lb_mbid, name, kind, m3u_path, date, fetched_at
+requests        track_id, source, requested_at, confirmed_at
 external_files  path, root, size, mtime, recording_mbid, artist, title, duration_ms
 playlist_tracks playlist_id, track_id, position
 playlist_syncs  playlist_id, target, remote_id, synced_at

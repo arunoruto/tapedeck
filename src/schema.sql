@@ -82,3 +82,12 @@ CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
+
+-- Song requests (Telegram, td request): when they came in, where from, and whether the
+-- requester confirmed the pick. Rows go with the track.
+CREATE TABLE IF NOT EXISTS requests (
+    track_id     INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
+    source       TEXT,
+    requested_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now')),
+    confirmed_at TEXT
+);

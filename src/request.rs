@@ -232,8 +232,14 @@ impl App {
             }
         }
         let track = self.db().track_by_id(id)?.context("track vanished")?;
+        self.db().record_request(id, a.source.url.as_deref().or(Some(a.source.raw_title.as_str())))?;
         let playlist = self.add_to_requests(id, tx).await?;
         Ok(Outcome { track, playlist, already_had })
+    }
+
+    /// The requester says the pick was right.
+    pub(crate) fn confirm_request(&self, track_id: i64) -> Result<()> {
+        self.db().confirm_request(track_id)
     }
 
     /// Drop a requested track again: file, row, playlist entry, push.

@@ -309,6 +309,28 @@ impl Db {
         Ok(())
     }
 
+    pub fn record_request(&self, track_id: i64, source: Option<&str>) -> Result<()> {
+        self.0.execute(
+            "INSERT INTO requests (track_id, source) VALUES (?1, ?2)
+             ON CONFLICT(track_id) DO UPDATE SET source = excluded.source, requested_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), confirmed_at = NULL",
+            params![track_id, source],
+        )?;
+        Ok(())
+    }
+
+    pub fn confirm_request(&self, track_id: i64) -> Result<()> {
+        self.0.execute(
+            "UPDATE requests SET confirmed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now') WHERE track_id = ?1",
+            [track_id],
+        )?;
+        Ok(())
+    }
+
+    /// Requests nobody confirmed or corrected yet.
+    pub fn unconfirmed_requests(&self) -> Result<i64> {
+        Ok(self.0.query_row("SELECT COUNT(*) FROM requests WHERE confirmed_at IS NULL", [], |r| r.get(0))?)
+    }
+
     pub fn meta_get(&self, key: &str) -> Result<Option<String>> {
         Ok(self.0.query_row("SELECT value FROM meta WHERE key = ?1", [key], |r| r.get(0)).optional()?)
     }
@@ -355,6 +377,7 @@ impl Db {
     }
 
     pub fn delete_track(&self, id: i64) -> Result<()> {
+        self.0.execute("DELETE FROM requests WHERE track_id = ?1", [id])?;
         self.0.execute("DELETE FROM playlist_tracks WHERE track_id = ?1", [id])?;
         self.0.execute("DELETE FROM tracks WHERE id = ?1", [id])?;
         Ok(())
