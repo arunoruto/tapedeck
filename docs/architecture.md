@@ -151,7 +151,9 @@ that title.
 `td remote relink --from DIR` is for the end of a migration: every distinct backup entry under
 `DIR` (or anywhere outside the library, without `--from`) is resolved to a library track, by
 the file's MusicBrainz tag, by the cached import lookup, or by artist, title and length against
-an index of the library built once, and rewritten. Smart playlists' backups are left alone.
+an index of the library built once, and rewritten. Smart playlists' backups are left alone by
+relink (Plex regenerates them from a filter), but moves made by import, refile and retag are
+followed in them too, since that is harmless.
 Backup files are replaced atomically. After that the imported folder can go without any
 backup dangling.
 

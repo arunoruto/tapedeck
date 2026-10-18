@@ -798,7 +798,7 @@ impl App {
     ) -> Result<(HashMap<PathBuf, PathBuf>, usize)> {
         let library = &self.config.library;
         let mut outside: Vec<PathBuf> = vec![];
-        for p in backup_files(dir)?.into_iter().filter(|p| p.extension().is_some_and(|e| e == "m3u8")) {
+        for p in backup_files(dir, false)?.into_iter().filter(|p| p.extension().is_some_and(|e| e == "m3u8")) {
             for line in std::fs::read_to_string(&p)?.lines() {
                 let path = Path::new(line);
                 if line.starts_with('/')
@@ -1300,7 +1300,7 @@ fn name_key(f: &library::Found) -> (String, String) {
 /// files, so `td remote restore` keeps working after an import. Returns how many files changed.
 fn rewrite_backups(dir: &Path, moved: &HashMap<PathBuf, PathBuf>) -> Result<usize> {
     let mut changed = 0;
-    for p in backup_files(dir)? {
+    for p in backup_files(dir, true)? {
         match p.extension().and_then(|e| e.to_str()) {
             Some("m3u8") => {
                 let body = std::fs::read_to_string(&p)?;
@@ -1337,7 +1337,7 @@ fn rewrite_backups(dir: &Path, moved: &HashMap<PathBuf, PathBuf>) -> Result<usiz
 /// How many backup m3u8s under `dir` list `file`.
 fn backup_references(dir: &Path, file: &Path) -> usize {
     let want = file.to_string_lossy();
-    backup_files(dir)
+    backup_files(dir, true)
         .unwrap_or_default()
         .iter()
         .filter(|p| p.extension().is_some_and(|e| e == "m3u8"))
@@ -1345,9 +1345,10 @@ fn backup_references(dir: &Path, file: &Path) -> usize {
         .count()
 }
 
-/// Every backup m3u8/json under `dir`, minus smart playlists (their JSON says `"smart": true`,
-/// and the m3u8 beside it shares the stem): Plex regenerates those from a filter.
-fn backup_files(dir: &Path) -> Result<Vec<PathBuf>> {
+/// Every backup m3u8/json under `dir`. Without `include_smart`, smart playlists (their JSON says
+/// `"smart": true`, and the m3u8 beside it shares the stem) are left out: Plex regenerates those
+/// from a filter, so relinking them is pointless, while following a move is harmless.
+fn backup_files(dir: &Path, include_smart: bool) -> Result<Vec<PathBuf>> {
     let mut files = vec![];
     let mut stack = vec![dir.to_path_buf()];
     while let Some(d) = stack.pop() {
@@ -1372,7 +1373,9 @@ fn backup_files(dir: &Path) -> Result<Vec<PathBuf>> {
         })
         .map(|p| p.with_extension(""))
         .collect();
-    files.retain(|p| !smart.contains(&p.with_extension("")));
+    if !include_smart {
+        files.retain(|p| !smart.contains(&p.with_extension("")));
+    }
     files.sort();
     Ok(files)
 }
