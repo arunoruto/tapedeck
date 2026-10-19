@@ -133,6 +133,12 @@ pub enum Command {
         #[arg(long)]
         video: bool,
     },
+    /// Steam soundtracks: import the Steam client's folder ([steam] path) and download what the
+    /// account owns ([steam] username). Tags are trusted, nothing is retagged.
+    Steam {
+        #[command(subcommand)]
+        action: SteamCmd,
+    },
     /// Read-only libraries managed elsewhere (Lidarr): index them, replace own copies.
     External {
         #[command(subcommand)]
@@ -162,6 +168,16 @@ pub enum Command {
         #[arg(long, requires = "move")]
         delete_duplicates: bool,
     },
+}
+
+#[derive(Subcommand, Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "kebab-case", tag = "action")]
+pub enum SteamCmd {
+    /// The soundtrack folders and the owned soundtracks, with what has been imported.
+    List,
+    /// Import new soundtracks (downloading them first when [steam] username is set). The daemon
+    /// does this on [steam] interval.
+    Sync,
 }
 
 #[derive(Subcommand, Clone, Debug, Serialize, Deserialize)]

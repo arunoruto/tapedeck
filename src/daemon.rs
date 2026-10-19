@@ -106,6 +106,25 @@ pub async fn serve(cfg: Config) -> Result<()> {
         });
     }
 
+    // New Steam soundtracks, on their own clock; downloads can take a while, so not inside sync.
+    if let Ok(every) = app.config.steam_interval()
+        && !every.is_zero()
+        && app.config.steam_enabled()
+    {
+        let steam = app.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(every).await;
+                let (tx, mut rx) = mpsc::channel(64);
+                let a = steam.clone();
+                tokio::spawn(async move { a.run(Command::Steam { action: crate::cli::SteamCmd::Sync }, tx).await });
+                while let Some(ev) = rx.recv().await {
+                    log_event(&ev);
+                }
+            }
+        });
+    }
+
     // Listens queued while ListenBrainz was unreachable.
     {
         let (tx, mut rx) = mpsc::channel(64);

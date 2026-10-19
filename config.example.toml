@@ -38,6 +38,11 @@ section = "Music"
 # How Plex sees the library if it runs in a container or on another host:
 # path_map = { "/srv/music" = "/music" }
 
+# [steam]                                           # game soundtracks from Steam, tags trusted, no MusicBrainz; see the docs
+# path = "/home/you/.local/share/Steam/steamapps/music"   # what the Steam client installed
+# username = "you"                                  # steamcmd account (log in once by hand); owned soundtracks are downloaded
+# interval = "24h"                                  # daemon check; "0" off
+
 # [external]                                        # read-only libraries (Lidarr); recordings found there are never downloaded
 # paths = ["/srv/music/releases"]
 # scan_interval = "1h"                              # daemon rescans on its own clock; "0" = only at sync

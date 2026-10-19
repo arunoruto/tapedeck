@@ -91,6 +91,9 @@ binary is called `td`.
   filed and a yearly Requests playlist on Plex; it asks only when it is not sure.
 - **Other libraries respected**: point it at Lidarr's folder and a recording that exists there
   is never downloaded again; playlists use the better copy, and own duplicates can be swapped out.
+- **Steam soundtracks.** Point `[steam]` at the Steam client's `steamapps/music`, or give it
+  a steamcmd account and the daemon downloads every soundtrack you own. They come in with
+  their own tags and artwork, no MusicBrainz needed.
 - **A Subsonic server, too.** Point cliamp, Symfonium, Feishin or any Subsonic app at the
   daemon's port: playlists, browsing by MusicBrainz artist and album, cover art, streaming and
   scrobbling to ListenBrainz, with sign-in optional on a LAN.

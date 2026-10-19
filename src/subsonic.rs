@@ -10,17 +10,13 @@
 //! ListenBrainz token and retry queue apply. Sign-in is `[server.subsonic]`; without it every
 //! client is anonymous and gets the `[server] anonymous` scopes.
 
-use std::{
-    path::PathBuf,
-    sync::{Arc, OnceLock},
-    time::Duration,
-};
+use std::{path::PathBuf, sync::Arc};
 
 use axum::Router;
 use subsonic_server::{Error, Library, Playlist, Scope, Server, Song};
 use tokio::sync::mpsc;
 
-use crate::{App, Event, app::remote_title, cli::Command, db::Track, library::is_uuid};
+use crate::{App, Event, app::remote_title, cli::Command, db::Track, http, library::is_uuid, steam::is_steam_id};
 
 /// The `/rest/*` router for this app, with `[server.subsonic]` credentials when configured.
 pub fn router(app: Arc<App>, anonymous: Vec<String>) -> Router {
@@ -56,7 +52,7 @@ fn song(t: &Track) -> Song {
         year: t.year,
         duration: t.duration_ms.map(|ms| ms / 1000),
         path: t.path.clone().unwrap_or_default(),
-        cover_art: is_uuid(&album_id).then(|| album_id.clone()),
+        cover_art: (is_uuid(&album_id) || is_steam_id(&album_id)).then(|| album_id.clone()),
         music_brainz_id: is_uuid(&t.recording_mbid).then(|| t.recording_mbid.clone()),
         album_music_brainz_id: is_uuid(&album_id).then(|| album_id.clone()),
         artist_music_brainz_id: is_uuid(&t.album_artist_mbid).then(|| t.album_artist_mbid.clone()),
@@ -119,13 +115,22 @@ impl Library for Backend {
         Ok(track.filter(playable).and_then(|t| t.path).map(|rel| self.app.config.library.join(rel)))
     }
 
-    /// Fetched from the Cover Art Archive once per size and kept in `covers/` next to the
-    /// database; an empty file remembers "none", so the archive is asked once.
+    /// MusicBrainz releases: fetched from the Cover Art Archive once per size and kept in
+    /// `covers/` next to the database (an empty file remembers "none", so the archive is asked
+    /// once). Steam soundtracks: the picture embedded in the first file, or a cover.jpg beside it.
     async fn cover(&self, id: &str, size: u32) -> Result<Option<Vec<u8>>, Error> {
         let mbid = match id.parse::<i64>() {
             Ok(n) => self.app.db().track_by_id(n).map_err(internal)?.map(|t| t.album_mbid).unwrap_or_default(),
             Err(_) => id.to_string(),
         };
+        if is_steam_id(&mbid) {
+            let tracks = self.app.db().all_tracks().map_err(internal)?;
+            let file = tracks.iter().find(|t| t.album_mbid == mbid && playable(t)).and_then(|t| t.path.clone());
+            let file = file.map(|rel| self.app.config.library.join(rel));
+            return tokio::task::spawn_blocking(move || file.and_then(|f| crate::steam::cover_for(&f)))
+                .await
+                .map_err(Error::internal);
+        }
         if !is_uuid(&mbid) {
             return Ok(None);
         }
@@ -191,18 +196,6 @@ impl Library for Backend {
         };
         self.anonymous.iter().any(|a| a == name)
     }
-}
-
-static HTTP: OnceLock<reqwest::Client> = OnceLock::new();
-
-fn http() -> &'static reqwest::Client {
-    HTTP.get_or_init(|| {
-        reqwest::Client::builder()
-            .user_agent(crate::USER_AGENT)
-            .timeout(Duration::from_secs(20))
-            .build()
-            .expect("reqwest client")
-    })
 }
 
 #[cfg(test)]

@@ -76,6 +76,20 @@ yt-dlp is searched with `ytsearch1:<artist> - <title>` unless a track has an exp
 | `section` | Name of the music library section, usually `Music`. |
 | `path_map` | Local prefix → the prefix Plex sees, e.g. `{ "/srv/music" = "/music" }` for a container. Longest match wins. Leave out if identical. |
 
+## `[steam]`
+
+Game soundtracks bought on Steam, imported as they are; see [Steam soundtracks](steam.md).
+`path` is the Steam client's `steamapps/music`; `username` a steamcmd account (logged in
+once by hand) whose owned soundtracks are downloaded. Either or both. `steamcmd_bin`
+(default `steamcmd`), `staging` (default `steam/` next to the database) and `interval`
+(default `24h`, `"0"` off) tune the download side.
+
+```toml
+[steam]
+path = "/home/you/.local/share/Steam/steamapps/music"
+username = "you"
+```
+
 ## `[server.subsonic]`
 
 Sign-in for [Subsonic clients](subsonic.md) on `/rest/`, served on the `[server] listen` port.

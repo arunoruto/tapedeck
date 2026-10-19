@@ -382,6 +382,14 @@ impl App {
                     }
                 }
             }
+            Command::Steam { action: crate::cli::SteamCmd::List } => {
+                let v = self.steam_list(tx).await?;
+                data(tx, v).await
+            }
+            Command::Steam { action: crate::cli::SteamCmd::Sync } => {
+                let reports = self.steam_sync(tx).await?;
+                data(tx, json!(reports)).await
+            }
             Command::External { action: ExternalCmd::Scan } => {
                 ensure!(!self.config.external.paths.is_empty(), "no external.paths configured");
                 let report = self.external_scan(tx).await?;

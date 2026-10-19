@@ -40,6 +40,9 @@ pub struct Config {
     /// Song requests over Telegram; off unless a token is set.
     #[serde(default)]
     pub telegram: Telegram,
+    /// Game soundtracks bought on Steam, imported as they are (tags trusted, no MusicBrainz).
+    #[serde(default)]
+    pub steam: Steam,
     /// The daemon's HTTP API for `td` on other machines; off unless `listen` is set.
     #[serde(default)]
     pub server: Server,
@@ -75,6 +78,44 @@ pub struct Subsonic {
     pub user: Option<String>,
     pub password: Option<String>,
     pub password_file: Option<PathBuf>,
+}
+
+/// `[steam]`. Either or both: `path` imports what the Steam client installed, `username`
+/// downloads what the account owns through steamcmd (logged in once by hand for Steam Guard).
+#[derive(Deserialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct Steam {
+    /// The Steam client's soundtrack folder (`…/steamapps/music`); every subfolder is a soundtrack.
+    pub path: Option<PathBuf>,
+    /// steamcmd account whose owned soundtracks are listed and fetched.
+    pub username: Option<String>,
+    #[serde(default = "default_steamcmd")]
+    pub steamcmd_bin: String,
+    /// Downloads land here before import; default `steam/` next to the database.
+    pub staging: Option<PathBuf>,
+    /// How often the daemon looks for new soundtracks; "0" turns it off.
+    #[serde(default = "default_steam_interval")]
+    pub interval: String,
+}
+
+impl Default for Steam {
+    fn default() -> Self {
+        Self {
+            path: None,
+            username: None,
+            steamcmd_bin: default_steamcmd(),
+            staging: None,
+            interval: default_steam_interval(),
+        }
+    }
+}
+
+fn default_steamcmd() -> String {
+    "steamcmd".into()
+}
+
+fn default_steam_interval() -> String {
+    "24h".into()
 }
 
 fn default_anonymous() -> Vec<String> {
@@ -343,6 +384,7 @@ impl Config {
             bail!("external.prefer_external must be auto, ask or never");
         }
         parse_duration(&cfg.external.scan_interval, "external.scan_interval")?;
+        parse_duration(&cfg.steam.interval, "steam.interval")?;
         for t in &cfg.sync.targets {
             if t == "plex" && cfg.sync.plex.is_none() {
                 bail!("sync.targets lists plex but [sync.plex] is missing");
@@ -409,6 +451,15 @@ impl Config {
     /// Zero means no periodic scan.
     pub fn external_scan_interval(&self) -> Result<Duration> {
         parse_duration(&self.external.scan_interval, "external.scan_interval")
+    }
+
+    pub fn steam_interval(&self) -> Result<Duration> {
+        parse_duration(&self.steam.interval, "steam.interval")
+    }
+
+    /// `[steam]` is in use when either source is set.
+    pub fn steam_enabled(&self) -> bool {
+        self.steam.path.is_some() || self.steam.username.is_some()
     }
 }
 
