@@ -287,13 +287,16 @@ its socket.
 ## Roadmap
 
 Working today: the whole pipeline above, yt-dlp as the download backend, Plex as the sync
-target.
+target, a Subsonic server, playback in the TUI, Steam soundtracks and lyrics.
 
 - [x] A TUI for browsing the library and playlists
 - [x] Actions in the TUI: sync, re-download, pin a source, push, delete, with confirmation
+- [x] Playback (mpv in the TUI, any Subsonic app)
+- [x] Lyrics from LRCLIB, as sidecars for Plex and over Subsonic
+- [ ] Better lyrics sync: re-time plain or badly timed lyrics against the audio (vocal
+  separation plus forced alignment), so every song with words gets accurate `.lrc` timings
 - [ ] More sync targets: Jellyfin, plain m3u export
 - [ ] More download backends: Soulseek
-- [ ] Playback, eventually
 
 Sync targets and download backends are each one small trait; see
 [the architecture page](https://arunoruto.github.io/tapedeck/architecture.html#extension-points). Open
