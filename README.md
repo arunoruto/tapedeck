@@ -294,7 +294,9 @@ target, a Subsonic server, playback in the TUI, Steam soundtracks and lyrics.
 - [x] Playback (mpv in the TUI, any Subsonic app)
 - [x] Lyrics from LRCLIB, as sidecars for Plex and over Subsonic
 - [ ] Better lyrics sync: re-time plain or badly timed lyrics against the audio (vocal
-  separation plus forced alignment), so every song with words gets accurate `.lrc` timings
+  separation plus forced alignment), so every song with words gets accurate `.lrc` timings.
+  The heavy lifting stays in external tools (Demucs, WhisperX, stable-ts, …) behind a small
+  aligner interface in tapedeck, so any of them can be plugged in
 - [ ] More sync targets: Jellyfin, plain m3u export
 - [ ] More download backends: Soulseek
 
