@@ -2,13 +2,13 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::db::Track;
 
 /// Write `<playlist_dir>/<stem>.m3u8` listing the ready tracks. Returns the file path.
 pub fn write(playlist_dir: &Path, library: &Path, stem: &str, title: &str, tracks: &[Track]) -> Result<PathBuf> {
-    std::fs::create_dir_all(playlist_dir)?;
+    std::fs::create_dir_all(playlist_dir).with_context(|| format!("creating {}", playlist_dir.display()))?;
     let mut body = format!("#EXTM3U\n#PLAYLIST:{title}\n");
     for t in tracks.iter().filter(|t| crate::external::present(t)) {
         let Some(rel) = &t.path else { continue };
@@ -17,7 +17,7 @@ pub fn write(playlist_dir: &Path, library: &Path, stem: &str, title: &str, track
         body.push_str(&format!("#EXTINF:{secs},{} - {}\n{}\n", t.artist, t.title, entry.display()));
     }
     let file = playlist_dir.join(format!("{}.m3u8", safe_name(stem)));
-    std::fs::write(&file, body)?;
+    std::fs::write(&file, body).with_context(|| format!("writing {}", file.display()))?;
     Ok(file)
 }
 
@@ -27,7 +27,7 @@ pub fn write_entries(file: &Path, title: &str, entries: &[(String, PathBuf)]) ->
     for (label, path) in entries {
         body.push_str(&format!("#EXTINF:-1,{label}\n{}\n", path.display()));
     }
-    std::fs::write(file, body)?;
+    std::fs::write(file, body).with_context(|| format!("writing {}", file.display()))?;
     Ok(())
 }
 

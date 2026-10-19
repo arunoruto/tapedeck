@@ -597,7 +597,7 @@ impl App {
         tx: &Sender<Event>,
     ) -> Result<()> {
         let dir = dir.join(target.name());
-        std::fs::create_dir_all(&dir)?;
+        std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
         // Plex allows two playlists with one title, and "Weekly Jams" and Explo's "Weekly-Jams"
         // slug the same: a stem already used in this run, or on disk by a sidecar with another
         // id, gets the remote id appended. A backup never overwrites another playlist's.
@@ -629,7 +629,9 @@ impl App {
             let m3u = dir.join(format!("{stem}.m3u8"));
             m3u::write_entries(&m3u, &p.title, &entries)?;
             let side = json!({ "target": target.name(), "id": p.id, "title": p.title, "smart": p.smart, "tracks": p.tracks, "items": items });
-            std::fs::write(dir.join(format!("{stem}.json")), serde_json::to_vec_pretty(&side)?)?;
+            let side_path = dir.join(format!("{stem}.json"));
+            std::fs::write(&side_path, serde_json::to_vec_pretty(&side)?)
+                .with_context(|| format!("writing {}", side_path.display()))?;
             info(
                 tx,
                 format!("{}: backed up {} ({} tracks) → {}", target.name(), p.title, entries.len(), m3u.display()),
@@ -1107,7 +1109,7 @@ impl App {
             }
             let target = archive.join(format!("{period}.m3u8"));
             if !target.exists() {
-                std::fs::create_dir_all(&archive)?;
+                std::fs::create_dir_all(&archive).with_context(|| format!("creating {}", archive.display()))?;
                 let body: String = std::fs::read_to_string(&path)?
                     .lines()
                     .map(|l| match l.starts_with(['#', '/']) || l.is_empty() {
@@ -1116,7 +1118,7 @@ impl App {
                     })
                     .map(|l| l + "\n")
                     .collect();
-                std::fs::write(&target, body)?;
+                std::fs::write(&target, body).with_context(|| format!("writing {}", target.display()))?;
             }
             std::fs::remove_file(&path)?;
         }
@@ -1611,7 +1613,7 @@ fn backup_files(dir: &Path, include_smart: bool) -> Result<Vec<PathBuf>> {
 /// Write via a temp file and rename, so an interrupted run never leaves a half-written backup.
 fn write_atomic(path: &Path, bytes: &[u8]) -> Result<()> {
     let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, bytes)?;
+    std::fs::write(&tmp, bytes).with_context(|| format!("writing {}", tmp.display()))?;
     std::fs::rename(&tmp, path).with_context(|| format!("replacing {}", path.display()))?;
     Ok(())
 }
