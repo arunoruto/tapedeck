@@ -469,6 +469,10 @@ impl App {
             (Some(keys), _) => all.into_iter().filter(|s| keys.contains(&s.key)).collect(),
             (None, Some(id)) => {
                 let key = format!("t:{id}");
+                if sel.force {
+                    // Starting over for one track forgets what was rejected for it.
+                    self.db().meta_set(&format!("lyrics.rejected.{key}"), "")?;
+                }
                 let one = all
                     .into_iter()
                     .find(|s| s.key == key)
@@ -647,6 +651,24 @@ impl App {
         )
     }
 
+    /// Keep the entry but drop its synced text: the sidecar tapedeck wrote becomes a .txt.
+    async fn lyrics_downgrade(&self, s: &Subject, mut row: LyricsRow) -> Result<()> {
+        row.synced = None;
+        if row.sidecar.as_deref() == Some("lrc") {
+            let lrc = s.audio.with_extension("lrc");
+            if lrc.is_file() {
+                std::fs::remove_file(&lrc).with_context(|| format!("deleting {}", lrc.display()))?;
+            }
+            let f = Found { plain: row.plain.clone(), ..Default::default() };
+            row.sidecar = write_sidecar(&s.audio, &f, true)?.map(str::to_string);
+            for target in &self.targets {
+                let _ = target.refresh_lyrics(std::slice::from_ref(&s.audio)).await;
+            }
+        }
+        self.db().lyrics_set(&row)?;
+        Ok(())
+    }
+
     /// `td lyrics check`: synced lyrics tapedeck fetched whose last stamp lies past the end of
     /// the song are wrong; with `fix` they are rejected and refetched, otherwise only listed.
     pub(crate) async fn lyrics_check(&self, fix: bool, tx: &Sender<Event>) -> Result<Value> {
@@ -665,14 +687,22 @@ impl App {
         if fix {
             for v in &suspect {
                 let key = v["key"].as_str().unwrap_or("");
-                if let Some(id) = key.strip_prefix("t:").and_then(|i| i.parse::<i64>().ok()) {
-                    match self.lyrics_reject(id, tx).await {
-                        Ok(r) => {
-                            info(tx, format!("lyrics: refetched {} - {}: {}", v["artist"], v["title"], r["status"]))
-                                .await?
-                        }
-                        Err(e) => info(tx, format!("lyrics: {} - {}: {e:#}", v["artist"], v["title"])).await?,
-                    }
+                let overrun = v["last_stamp_ms"].as_i64().unwrap_or(0) - v["duration_ms"].as_i64().unwrap_or(0);
+                let Some(s) = subjects.iter().find(|s| s.key == key) else { continue };
+                let row = self.db().lyrics_get(key)?;
+                // A few seconds over with the right song: a sloppy last stamp, so keep the entry
+                // and its plain text. Far over, or no plain text: a wrong entry, try the next.
+                let small = overrun <= 15_000 && row.as_ref().is_some_and(|r| r.plain.is_some());
+                let outcome = if small {
+                    self.lyrics_downgrade(s, row.expect("checked")).await.map(|_| "plain text kept as .txt".to_string())
+                } else if let Some(id) = key.strip_prefix("t:").and_then(|i| i.parse::<i64>().ok()) {
+                    self.lyrics_reject(id, tx).await.map(|r| format!("refetched: {}", r["status"]))
+                } else {
+                    Ok("left alone (external, no plain text)".to_string())
+                };
+                match outcome {
+                    Ok(what) => info(tx, format!("lyrics: {} - {}: {what}", s.artist, s.title)).await?,
+                    Err(e) => info(tx, format!("lyrics: {} - {}: {e:#}", s.artist, s.title)).await?,
                 }
             }
         }

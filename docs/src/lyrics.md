@@ -53,9 +53,9 @@ td lyrics show 123            # what is known for one track, and whether a sidec
 td lyrics fetch               # tracks without lyrics that are due (what the daemon runs)
 td lyrics fetch --all         # every track without lyrics, ignoring the retry schedule
 td lyrics fetch --external    # only external tracks
-td lyrics fetch 123 --force   # ask again and overwrite the sidecar
+td lyrics fetch 123 --force   # ask again, forget rejections and overwrite the sidecar
 td lyrics reject 123          # wrong lyrics: drop the sidecar tapedeck wrote, blocklist the source, try the next
-td lyrics check [--fix]       # synced lyrics that run past the end of their song; --fix rejects and refetches them
+td lyrics check [--fix]       # synced lyrics that run past the end of their song; --fix keeps the plain text as .txt for small overruns, rejects larger ones
 ```
 
 ## Configuration
