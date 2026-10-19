@@ -33,9 +33,16 @@ async fn main() -> Result<()> {
     // pipe or a log, progress is dropped and the rest stays plain lines.
     let tty = std::io::IsTerminal::is_terminal(&std::io::stderr());
     let mut bar: Option<ProgressBar> = None;
+    // Lines go out with the bar suspended (cleared with an erase, not overwritten with spaces),
+    // so nothing ends up padded to the terminal width.
     let say = |bar: &Option<ProgressBar>, line: String| match bar {
-        Some(b) => b.println(line),
+        Some(b) => b.suspend(|| eprintln!("{line}")),
         None => eprintln!("{line}"),
+    };
+    // `{wide_msg}` pads the bar line to the full width; cut the message ourselves instead.
+    let fit = |msg: String, reserved: usize| {
+        let width = crossterm::terminal::size().map(|(w, _)| w as usize).unwrap_or(80);
+        msg.chars().take(width.saturating_sub(reserved + 1)).collect::<String>()
     };
     while let Some(ev) = rx.recv().await {
         if cli.json {
@@ -57,7 +64,7 @@ async fn main() -> Result<()> {
                         if b.length() != Some(len) {
                             b.set_style(
                                 ProgressStyle::with_template(
-                                    "{spinner:.cyan} [{bar:28.cyan/dim}] {pos}/{len} {eta:>4} {wide_msg}",
+                                    "{spinner:.cyan} [{bar:28.cyan/dim}] {pos}/{len} {eta:>4} {msg}",
                                 )
                                 .expect("template")
                                 .progress_chars("━╸─"),
@@ -66,13 +73,17 @@ async fn main() -> Result<()> {
                         }
                         b.set_position(cur.saturating_sub(1));
                     }
-                    _ => b.set_style(ProgressStyle::with_template("{spinner:.cyan} {wide_msg}").expect("template")),
+                    _ => b.set_style(ProgressStyle::with_template("{spinner:.cyan} {msg}").expect("template")),
                 }
-                b.set_message(msg);
+                let reserved = if b.length().is_some() { 50 } else { 2 };
+                b.set_message(fit(msg, reserved));
             }
             Event::Progress { .. } => {}
             Event::Info { msg } => say(&bar, msg),
             Event::Data { data } => {
+                if let Some(b) = bar.take() {
+                    b.finish_and_clear();
+                }
                 let text = tapedeck::render::render(&data);
                 match &bar {
                     Some(b) => b.suspend(|| println!("{text}")),
