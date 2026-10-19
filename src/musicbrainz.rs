@@ -135,6 +135,15 @@ const VERSION_WORDS: &[&str] = &[
     "karaoke",
     "mashup",
     "cover",
+    "stripped",
+    "cappella",
+    "acappella",
+    "unplugged",
+    "orchestral",
+    "symphonic",
+    "piano",
+    "reverb",
+    "nightcore",
 ];
 
 /// Not a thing anyone bought: DJ-pool dumps and MusicBrainz's placeholders.

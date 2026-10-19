@@ -40,7 +40,10 @@ async fn main() -> Result<()> {
         }
         match ev {
             Event::Progress { msg } if !cli.json && tty => {
-                eprint!("\r\x1b[2K{msg}");
+                // One line only: a wrapped progress line cannot be cleared and glues to the next.
+                let width = crossterm::terminal::size().map(|(w, _)| w as usize).unwrap_or(80).saturating_sub(1);
+                let line: String = msg.chars().take(width).collect();
+                eprint!("\r\x1b[2K{line}");
                 progressing = true;
             }
             Event::Info { msg } if !cli.json => eprintln!("{msg}"),

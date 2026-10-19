@@ -405,16 +405,67 @@ pub fn is_uuid(s: &str) -> bool {
 }
 
 /// "Artist - Title" → ("Artist", "Title"); anything else is all title.
+/// (artist, title) from a file name: "Artist - Title", "NN - Title", or a release-style
+/// "Artist - Album - NN - Title (MP3-320 320 kbps)" with the quality tag dropped.
 fn parse_stem(stem: &str) -> (String, String) {
-    match stem.split_once(" - ") {
-        Some((a, t)) => (a.trim().to_string(), t.trim().to_string()),
-        None => (String::new(), stem.trim().to_string()),
+    // "(MP3-320 320 kbps)", "[FLAC]" and the like.
+    let quality = |g: &str| {
+        let l = g.to_lowercase();
+        ["kbps", "mp3", "flac", "aac", "opus", "320", "v0", "lossless"].iter().any(|w| l.contains(w))
+    };
+    let mut cleaned = String::new();
+    let (mut depth, mut group) = (0, String::new());
+    for c in stem.chars() {
+        match c {
+            '(' | '[' => {
+                depth += 1;
+                if depth == 1 {
+                    group.clear();
+                }
+            }
+            ')' | ']' if depth > 0 => {
+                depth -= 1;
+                if depth == 0 && !quality(&group) {
+                    cleaned.push_str(&format!("({})", group.trim()));
+                }
+            }
+            _ if depth > 0 => group.push(c),
+            _ => cleaned.push(c),
+        }
+    }
+    let parts: Vec<&str> = cleaned.split(" - ").map(str::trim).filter(|p| !p.is_empty()).collect();
+    let is_no = |p: &str| p.len() <= 3 && p.chars().all(|c| c.is_ascii_digit());
+    match parts.as_slice() {
+        [] => (String::new(), stem.trim().to_string()),
+        [t] => (String::new(), t.to_string()),
+        [no, t] if is_no(no) => (String::new(), t.to_string()),
+        [a, t] => (a.to_string(), t.to_string()),
+        // "Artist - Album - NN - Title …": the title is everything after the track number.
+        parts => match parts.iter().position(|p| is_no(p)) {
+            Some(i) if i + 1 < parts.len() => (parts[0].to_string(), parts[i + 1..].join(" - ")),
+            _ => (parts[0].to_string(), parts[1..].join(" - ")),
+        },
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stems_from_release_style_names() {
+        assert_eq!(parse_stem("Daft Punk - Get Lucky"), ("Daft Punk".into(), "Get Lucky".into()));
+        assert_eq!(parse_stem("07 - Resurrections"), (String::new(), "Resurrections".into()));
+        assert_eq!(
+            parse_stem("Dubioza Kolektiv - Happy Machine - 03 - Free.mp3 (The Pirate Bay Song) (MP3-320 320 kbps)"),
+            ("Dubioza Kolektiv".into(), "Free.mp3 (The Pirate Bay Song)".into())
+        );
+        assert_eq!(
+            parse_stem("Happy Machine - 02 - No Escape (From Balkan) [FLAC]"),
+            ("Happy Machine".into(), "No Escape (From Balkan)".into())
+        );
+        assert_eq!(parse_stem("Just a title"), (String::new(), "Just a title".into()));
+    }
 
     #[test]
     fn sidecars_follow_the_track() {

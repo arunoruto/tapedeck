@@ -20,6 +20,11 @@ nothing: LRCLIB is open data, and files are written only into tapedeck's own lib
   in common, a known length within two seconds of ours, and synced lyrics whose last line
   lies inside the song; otherwise the plain text is used. How each song was matched and the
   length difference are kept, so `td lyrics status` shows how many came from a search.
+- A live, remix, acoustic or otherwise versioned title with no entry of its own gets the base
+  song's plain text as `.txt` (the words match, the timings would not); a title that says
+  "Instrumental" is marked instrumental without a lookup. When LRCLIB answers errors, calls
+  slow down to one every four seconds for a while and the pass stops after five in a row;
+  the next pass takes those songs again.
 - Synced lyrics become `<same name>.lrc`, plain ones `<same name>.txt`, written atomically next
   to the file. An existing sidecar is never overwritten (unless `--force`) and is indexed
   instead, so a library that already has `.lrc` files is simply read. Audio files are never

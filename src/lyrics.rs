@@ -239,9 +239,67 @@ async fn lrclib_get(path: &str, pairs: &[(&str, String)]) -> Result<Option<reqwe
     }
 }
 
+/// The title without the version groups: "LosT (live from Tokyo)" → "LosT", "唱 (TeddyLoid
+/// Remix)" → "唱". `None` when there is nothing to strip.
+fn base_title(title: &str) -> Option<String> {
+    if version_words(title).is_empty() {
+        return None;
+    }
+    let mut out = String::new();
+    let (mut depth, mut group) = (0, String::new());
+    for c in title.chars() {
+        match c {
+            '(' | '[' => {
+                depth += 1;
+                if depth == 1 {
+                    group.clear();
+                }
+            }
+            ')' | ']' if depth > 0 => {
+                depth -= 1;
+                if depth == 0 && version_words(&group).is_empty() {
+                    out.push_str(&format!("({})", group.trim()));
+                }
+            }
+            _ if depth > 0 => group.push(c),
+            _ => out.push(c),
+        }
+    }
+    // " - Live", " - Acoustic Version" tails.
+    let out = match out.rsplit_once(" - ") {
+        Some((head, tail)) if !version_words(tail).is_empty() => head.to_string(),
+        _ => out,
+    };
+    let out = out.trim().to_string();
+    (!out.is_empty() && norm(&out) != norm(title)).then_some(out)
+}
+
 /// Ask LRCLIB for `s`, skipping `rejected` ids: `get` with the full credit, search, then both
-/// again with the primary artist. `Ok(None)` is a miss, remembered until `retry_after`.
+/// again with the primary artist; for a live/remix/… version with no entry of its own, the
+/// base song's plain text. `Ok(None)` is a miss, remembered until `retry_after`.
 pub async fn lrclib(s: &Subject, rejected: &[String]) -> Result<Option<Found>> {
+    if version_words(&s.title).contains(&"instrumental") {
+        return Ok(Some(Found {
+            instrumental: true,
+            source: "title".into(),
+            method: "title".into(),
+            ..Default::default()
+        }));
+    }
+    if let Some(found) = lrclib_versions(s, rejected).await? {
+        return Ok(Some(found));
+    }
+    let Some(base) = base_title(&s.title) else { return Ok(None) };
+    // Timings of another version are useless, the words are not: plain text only.
+    let plain = Subject { title: base, duration_ms: None, ..s.clone() };
+    Ok(lrclib_versions(&plain, rejected).await?.filter(|f| f.plain.is_some() && !f.instrumental).map(|f| Found {
+        synced: None,
+        method: format!("{}-base", f.method),
+        ..f
+    }))
+}
+
+async fn lrclib_versions(s: &Subject, rejected: &[String]) -> Result<Option<Found>> {
     let title = lookup_title(&s.title);
     let primary = primary_artist(&s.artist);
     let mut artists = vec![(s.artist.clone(), "")];
@@ -268,7 +326,7 @@ pub async fn lrclib(s: &Subject, rejected: &[String]) -> Result<Option<Found>> {
         // Search: by title and artist, two tries on a 5xx (LRCLIB is flaky rather than down).
         let pairs = [("track_name", title.clone()), ("artist_name", artist.clone())];
         let mut hits: Option<Vec<LrclibHit>> = None;
-        for attempt in 0..2 {
+        for (attempt, wait) in [2u64, 5, 10].into_iter().enumerate() {
             match lrclib_get("search", &pairs).await {
                 Ok(Some(res)) => {
                     hits = Some(res.json().await.unwrap_or_default());
@@ -279,9 +337,9 @@ pub async fn lrclib(s: &Subject, rejected: &[String]) -> Result<Option<Found>> {
                     break;
                 }
                 Err(e) if e.downcast_ref::<RateLimited>().is_some() => return Err(e),
-                Err(e) if attempt == 0 => {
-                    tracing::debug!("lrclib search: {e:#}; retrying once");
-                    tokio::time::sleep(Duration::from_secs(2)).await;
+                Err(e) if attempt < 2 => {
+                    tracing::debug!("lrclib search: {e:#}; retrying in {wait}s");
+                    tokio::time::sleep(Duration::from_secs(wait)).await;
                 }
                 Err(e) => bail!(Transient(format!("{e:#}"))),
             }
@@ -493,21 +551,30 @@ impl App {
         let mut report = PassReport { considered: subjects.len(), ..Default::default() };
         let mut touched: Vec<PathBuf> = vec![];
         let mut calls = 0usize;
+        // One call a second; after a provider error, one every four seconds for a while, and
+        // five errors in a row end the pass (the next one takes those songs again).
+        let (mut slow_for, mut streak) = (0usize, 0usize);
         for (i, s) in subjects.iter().enumerate() {
             if sel.limit.is_some_and(|l| calls >= l) {
                 report.stopped = Some(format!("limit of {calls} provider calls reached"));
+                break;
+            }
+            if streak >= 5 {
+                report.stopped = Some("5 provider errors in a row; the next pass continues".into());
                 break;
             }
             progress(tx, format!("lyrics {}/{}: {} - {}", i + 1, subjects.len(), s.artist, s.title)).await?;
             let had_file = !sel.force && read_sidecar(&s.audio).is_some();
             if !had_file {
                 if calls > 0 {
-                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    tokio::time::sleep(Duration::from_secs(if slow_for > 0 { 4 } else { 1 })).await;
+                    slow_for = slow_for.saturating_sub(1);
                 }
                 calls += 1;
             }
             match self.lyrics_one(s, sel.force).await {
                 Ok((row, written)) => {
+                    streak = 0;
                     match row.status.as_str() {
                         "found" if row.source.as_deref() == Some("file") => report.from_file += 1,
                         "found" => report.found += 1,
@@ -525,6 +592,8 @@ impl App {
                 }
                 Err(e) => {
                     report.errors += 1;
+                    streak += 1;
+                    slow_for = 20;
                     info(tx, format!("lyrics: {} - {}: {e:#}", s.artist, s.title)).await?;
                 }
             }
@@ -768,6 +837,16 @@ mod tests {
         );
         // `get` results skip the title/artist check but not the length.
         assert!(reject_reason(&hit("whatever", "whoever", Some(226.0)), &s, false).is_none());
+    }
+
+    #[test]
+    fn version_titles_fall_back_to_the_base_song() {
+        assert_eq!(base_title("LosT (live from Tokyo)").as_deref(), Some("LosT"));
+        assert_eq!(base_title("唱 (TeddyLoid Remix)").as_deref(), Some("唱"));
+        assert_eq!(base_title("Numb - Live in Texas").as_deref(), Some("Numb"));
+        assert_eq!(base_title("Numb (feat. X)"), None, "no version word, nothing to strip");
+        assert_eq!(base_title("Stripped"), None, "the whole title is the word; nothing left");
+        assert!(version_words("Comfortably Numb (Instrumental)").contains(&"instrumental"));
     }
 
     #[test]
