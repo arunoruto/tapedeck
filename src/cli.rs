@@ -133,6 +133,11 @@ pub enum Command {
         #[arg(long)]
         video: bool,
     },
+    /// Lyrics from LRCLIB: .lrc/.txt next to the files for Plex, in the database for Subsonic.
+    Lyrics {
+        #[command(subcommand)]
+        action: LyricsCmd,
+    },
     /// Steam soundtracks: import the Steam client's folder ([steam] path) and download what the
     /// account owns ([steam] username). Tags are trusted, nothing is retagged.
     Steam {
@@ -168,6 +173,29 @@ pub enum Command {
         #[arg(long, requires = "move")]
         delete_duplicates: bool,
     },
+}
+
+#[derive(Subcommand, Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "kebab-case", tag = "action")]
+pub enum LyricsCmd {
+    /// Fetch lyrics for tracks that have none (the daemon does this on [lyrics] interval).
+    Fetch {
+        /// One track id.
+        track: Option<i64>,
+        /// Every track without lyrics, ignoring the retry schedule.
+        #[arg(long)]
+        all: bool,
+        /// Only external (Lidarr) tracks.
+        #[arg(long)]
+        external: bool,
+        /// Ask the provider again for every selected track and overwrite sidecars.
+        #[arg(long)]
+        force: bool,
+    },
+    /// What is known for one track.
+    Show { track: i64 },
+    /// Coverage per library.
+    Status,
 }
 
 #[derive(Subcommand, Serialize, Deserialize, Debug, Clone)]

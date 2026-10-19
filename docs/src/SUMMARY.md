@@ -13,6 +13,7 @@
 - [Song requests](requests.md)
 - [External libraries](external.md)
 - [Steam soundtracks](steam.md)
+- [Lyrics](lyrics.md)
 - [Migrating from Explo](migrating.md)
 
 # Reference

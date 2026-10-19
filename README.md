@@ -91,6 +91,8 @@ binary is called `td`.
   filed and a yearly Requests playlist on Plex; it asks only when it is not sure.
 - **Other libraries respected**: point it at Lidarr's folder and a recording that exists there
   is never downloaded again; playlists use the better copy, and own duplicates can be swapped out.
+- **Lyrics.** Synced lyrics from LRCLIB land as `.lrc` files next to the music, so Plexamp
+  shows them, and in the database, so Subsonic apps get them too. On by default, no account.
 - **Steam soundtracks.** Point `[steam]` at the Steam client's `steamapps/music`, or give it
   a steamcmd account and the daemon downloads every soundtrack you own. They come in with
   their own tags and artwork, no MusicBrainz needed.

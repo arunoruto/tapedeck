@@ -106,6 +106,31 @@ pub async fn serve(cfg: Config) -> Result<()> {
         });
     }
 
+    // Lyrics for tracks that have none yet, paced at one provider call a second.
+    if let Ok(every) = app.config.lyrics_interval()
+        && !every.is_zero()
+        && app.config.lyrics.enable
+    {
+        let lyr = app.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(every).await;
+                let (tx, mut rx) = mpsc::channel(64);
+                let a = lyr.clone();
+                tokio::spawn(async move {
+                    let sel = crate::lyrics::Selection { limit: Some(500), ..Default::default() };
+                    let _guard = a.busy.lock().await;
+                    if let Err(e) = a.lyrics_fetch(None, sel, &tx).await {
+                        tracing::warn!("lyrics pass: {e:#}");
+                    }
+                });
+                while let Some(ev) = rx.recv().await {
+                    log_event(&ev);
+                }
+            }
+        });
+    }
+
     // New Steam soundtracks, on their own clock; downloads can take a while, so not inside sync.
     if let Ok(every) = app.config.steam_interval()
         && !every.is_zero()

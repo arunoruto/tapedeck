@@ -76,6 +76,13 @@ yt-dlp is searched with `ytsearch1:<artist> - <title>` unless a track has an exp
 | `section` | Name of the music library section, usually `Music`. |
 | `path_map` | Local prefix → the prefix Plex sees, e.g. `{ "/srv/music" = "/music" }` for a container. Longest match wins. Leave out if identical. |
 
+## `[lyrics]`
+
+Lyrics from LRCLIB; see [Lyrics](lyrics.md). `enable` (default true), `write_sidecars`
+(default true, `.lrc`/`.txt` next to own tracks), `external` (`"db-only"`, the default, or
+`"missing-sidecars"` to also write next to external files that have none), `retry_after`
+(default `30d`) and `interval` (default `6h`, `"0"` off).
+
 ## `[steam]`
 
 Game soundtracks bought on Steam, imported as they are; see [Steam soundtracks](steam.md).

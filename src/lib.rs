@@ -8,6 +8,7 @@ pub mod download;
 pub mod external;
 pub mod library;
 pub mod listenbrainz;
+pub mod lyrics;
 pub mod m3u;
 pub mod musicbrainz;
 pub mod player;

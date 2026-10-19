@@ -13,7 +13,7 @@ use axum::{
 };
 use http_body_util::BodyExt;
 use serde_json::Value;
-use subsonic_server::{Error, Library, Playlist, Scope, Server, Song, token};
+use subsonic_server::{Error, Library, Lyrics, Playlist, Scope, Server, Song, parse_lrc, token};
 use tower::ServiceExt;
 
 /// (song id, now playing, at, client)
@@ -55,6 +55,12 @@ impl Library for Mem {
     async fn scrobble(&self, id: &str, now_playing: bool, at: Option<i64>, client: &str) -> Result<(), Error> {
         self.scrobbles.lock().unwrap().push((id.into(), now_playing, at, client.into()));
         Ok(())
+    }
+    async fn lyrics(&self, id: &str) -> Result<Option<Lyrics>, Error> {
+        Ok((id == "1").then(|| Lyrics {
+            synced: Some("[ar:Zed]\n[00:01.50]First line\n[00:03.00][00:05.25]Twice\n".into()),
+            plain: Some("First line\nTwice\nTwice".into()),
+        }))
     }
     fn anonymous_may(&self, scope: Scope) -> bool {
         self.open || scope == Scope::Read
@@ -120,6 +126,9 @@ impl Library for Shared {
     }
     async fn scrobble(&self, id: &str, now_playing: bool, at: Option<i64>, client: &str) -> Result<(), Error> {
         self.0.scrobble(id, now_playing, at, client).await
+    }
+    async fn lyrics(&self, id: &str) -> Result<Option<Lyrics>, Error> {
+        self.0.lyrics(id).await
     }
     fn anonymous_may(&self, scope: Scope) -> bool {
         self.0.anonymous_may(scope)
@@ -195,6 +204,21 @@ async fn open_server_browses_streams_and_scrobbles() {
     assert!(body.ends_with("fake"));
     let none = json(&router, "/rest/getCoverArt?id=al-b").await;
     assert_eq!(none["error"]["code"], 70);
+
+    let ext = json(&router, "/rest/getOpenSubsonicExtensions").await;
+    assert_eq!(ext["openSubsonicExtensions"][0]["name"], "songLyrics");
+    let l = json(&router, "/rest/getLyricsBySongId?id=1").await;
+    let s = &l["lyricsList"]["structuredLyrics"];
+    assert_eq!((s[0]["synced"].as_bool(), s[1]["synced"].as_bool()), (Some(true), Some(false)));
+    assert_eq!(s[0]["line"][0]["start"], 1500);
+    assert_eq!(s[0]["line"][2]["start"], 5250);
+    assert_eq!(s[0]["line"][2]["value"], "Twice");
+    assert_eq!(s[1]["line"].as_array().unwrap().len(), 3);
+    let none = json(&router, "/rest/getLyricsBySongId?id=2").await;
+    assert_eq!(none["lyricsList"]["structuredLyrics"].as_array().unwrap().len(), 0);
+    let classic = json(&router, "/rest/getLyrics?artist=zed&title=one").await;
+    assert_eq!(classic["lyrics"]["value"], "First line\nTwice\nTwice");
+    assert_eq!(parse_lrc("[00:00.00]\n[01:02.345]x").last().unwrap().0, 62345);
 
     json(&router, "/rest/scrobble?id=1&submission=false&c=cliamp").await;
     json(&router, "/rest/scrobble?id=1&id=2&time=1700000000000&time=1700000004000&c=cliamp").await;

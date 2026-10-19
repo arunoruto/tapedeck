@@ -43,6 +43,8 @@ bearer token of the HTTP API passes too.
 - **Cover art**: from the Cover Art Archive by release id, fetched once per size and kept in
   `covers/` next to the database.
 - **Streaming**: the original files with seeking, own and [external](external.md) ones alike.
+- **Lyrics**: synced through the OpenSubsonic `songLyrics` extension, plain through
+  `getLyrics`, from what [lyrics](lyrics.md) has gathered.
 - **Scrobbling**: the client's "now playing" and "scrobble" calls become listens on your
   ListenBrainz account through the daemon's token, with the same queue and retry as the TUI.
 

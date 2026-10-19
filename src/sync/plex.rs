@@ -103,6 +103,23 @@ impl Plex {
         Ok(idx)
     }
 
+    /// Plex file path → album ratingKey for every track in the section.
+    async fn album_index(&self, key: &str) -> Result<HashMap<String, String>> {
+        let v = self.get(&format!("/library/sections/{key}/all?type=10")).await?;
+        let mut idx = HashMap::new();
+        for m in v["MediaContainer"]["Metadata"].as_array().into_iter().flatten() {
+            let Some(album) = m["parentRatingKey"].as_str() else { continue };
+            for media in m["Media"].as_array().into_iter().flatten() {
+                for part in media["Part"].as_array().into_iter().flatten() {
+                    if let Some(f) = part["file"].as_str() {
+                        idx.insert(f.to_string(), album.to_string());
+                    }
+                }
+            }
+        }
+        Ok(idx)
+    }
+
     /// Inverse of `remote_path`: what Plex calls the file → where it is for us.
     fn local_path(&self, remote: &str) -> PathBuf {
         let hit = self
@@ -182,6 +199,19 @@ impl SyncTarget for Plex {
                 })
             })
             .collect())
+    }
+
+    /// Plex reads .lrc/.txt sidecars on an album metadata refresh, so refresh each album that
+    /// holds one of `files`.
+    async fn refresh_lyrics(&self, files: &[PathBuf]) -> Result<()> {
+        let (key, _) = self.section().await?;
+        let albums = self.album_index(&key).await?;
+        let keys: std::collections::BTreeSet<&String> =
+            files.iter().filter_map(|f| albums.get(&self.remote_path(f))).collect();
+        for album in keys {
+            self.call(reqwest::Method::PUT, &format!("/library/metadata/{album}/refresh")).await?;
+        }
+        Ok(())
     }
 
     async fn delete_playlist(&self, id: &str) -> Result<()> {

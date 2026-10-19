@@ -194,6 +194,13 @@ pub fn move_track(library: &Path, old_rel: &Path, new_rel: &Path) -> Result<()> 
     let (from, to) = (library.join(old_rel), library.join(new_rel));
     std::fs::create_dir_all(to.parent().context("template has no directory part")?)?;
     move_file(&from, &to)?;
+    // Lyrics sidecars travel with the audio.
+    for ext in ["lrc", "txt"] {
+        let side = from.with_extension(ext);
+        if side.is_file() {
+            let _ = move_file(&side, &to.with_extension(ext));
+        }
+    }
     prune(library, from.parent());
     Ok(())
 }
@@ -205,6 +212,9 @@ pub fn remove_track(library: &Path, rel: &Path) -> Result<()> {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
         Err(e) => return Err(e).with_context(|| format!("deleting {}", file.display())),
+    }
+    for ext in ["lrc", "txt"] {
+        let _ = std::fs::remove_file(file.with_extension(ext));
     }
     prune(library, file.parent());
     Ok(())
@@ -380,6 +390,21 @@ fn parse_stem(stem: &str) -> (String, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sidecars_follow_the_track() {
+        let lib = std::env::temp_dir().join(format!("td-sidecar-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&lib);
+        std::fs::create_dir_all(lib.join("A/Old")).unwrap();
+        std::fs::write(lib.join("A/Old/01 - X.opus"), b"audio").unwrap();
+        std::fs::write(lib.join("A/Old/01 - X.lrc"), b"[00:01.00]x").unwrap();
+        move_track(&lib, Path::new("A/Old/01 - X.opus"), Path::new("B/New/01 - X.opus")).unwrap();
+        assert!(lib.join("B/New/01 - X.lrc").is_file(), "lrc moved along");
+        assert!(!lib.join("A").exists(), "empty folders pruned");
+        remove_track(&lib, Path::new("B/New/01 - X.opus")).unwrap();
+        assert!(!lib.join("B/New/01 - X.lrc").exists(), "lrc deleted along");
+        let _ = std::fs::remove_dir_all(&lib);
+    }
 
     #[test]
     fn template_renders_and_sanitizes() {

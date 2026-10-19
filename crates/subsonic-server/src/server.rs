@@ -131,7 +131,7 @@ async fn handle(s: &Server, trusted: bool, method: &str, p: &Params, req: Option
     let v = match method {
         "ping" => json!({}),
         "getLicense" => json!({ "license": { "valid": true } }),
-        "getOpenSubsonicExtensions" => json!({ "openSubsonicExtensions": [] }),
+        "getOpenSubsonicExtensions" => json!({ "openSubsonicExtensions": [{ "name": "songLyrics", "versions": [1] }] }),
         "getMusicFolders" => json!({ "musicFolders": { "musicFolder": [{ "id": 1, "name": s.name }] } }),
         "getUser" => json!({ "user": {
             "username": who, "scrobblingEnabled": true, "adminRole": false, "settingsRole": false,
@@ -275,8 +275,29 @@ async fn handle(s: &Server, trusted: bool, method: &str, p: &Params, req: Option
         "getTopSongs" => json!({ "topSongs": {} }),
         "getSimilarSongs" => json!({ "similarSongs": {} }),
         "getSimilarSongs2" => json!({ "similarSongs2": {} }),
-        "getLyrics" => json!({ "lyrics": {} }),
-        "getLyricsBySongId" => json!({ "lyricsList": {} }),
+        "getLyricsBySongId" => {
+            let id = id()?;
+            let song = lib.song(id).await?.ok_or_else(|| Error::not_found("no such song"))?;
+            let structured = match lib.lyrics(id).await? {
+                Some(l) => structured_lyrics(&song, &l),
+                None => vec![],
+            };
+            json!({ "lyricsList": { "structuredLyrics": structured } })
+        }
+        "getLyrics" => {
+            let (artist, title) = (one(p, "artist").unwrap_or(""), one(p, "title").unwrap_or(""));
+            let songs = lib.songs().await?;
+            let hit = songs.iter().find(|s| {
+                s.title.eq_ignore_ascii_case(title) && (artist.is_empty() || s.artist.eq_ignore_ascii_case(artist))
+            });
+            match hit {
+                Some(s) => match lib.lyrics(&s.id).await? {
+                    Some(l) => json!({ "lyrics": { "artist": s.artist, "title": s.title, "value": plain_text(&l) } }),
+                    None => json!({ "lyrics": {} }),
+                },
+                None => json!({ "lyrics": {} }),
+            }
+        }
         "getInternetRadioStations" => json!({ "internetRadioStations": {} }),
         "getPodcasts" => json!({ "podcasts": {} }),
         "getNewestPodcasts" => json!({ "newestPodcasts": {} }),
@@ -286,6 +307,70 @@ async fn handle(s: &Server, trusted: bool, method: &str, p: &Params, req: Option
         _ => return Err(Error::new(0, format!("{} does not implement {method}", s.name))),
     };
     Ok(Reply::Json(v))
+}
+
+/// The OpenSubsonic `structuredLyrics` entries: a synced one from the LRC text, a plain one
+/// from the plain text.
+fn structured_lyrics(song: &crate::Song, l: &crate::Lyrics) -> Vec<Value> {
+    let base = |synced: bool, lines: Vec<Value>| {
+        json!({
+            "lang": "xxx",
+            "synced": synced,
+            "displayArtist": song.artist,
+            "displayTitle": song.title,
+            "offset": 0,
+            "line": lines,
+        })
+    };
+    let mut out = vec![];
+    if let Some(lrc) = &l.synced {
+        let lines: Vec<Value> =
+            parse_lrc(lrc).into_iter().map(|(ms, text)| json!({ "start": ms, "value": text })).collect();
+        if !lines.is_empty() {
+            out.push(base(true, lines));
+        }
+    }
+    if let Some(plain) = &l.plain {
+        out.push(base(false, plain.lines().map(|t| json!({ "value": t })).collect()));
+    }
+    out
+}
+
+fn plain_text(l: &crate::Lyrics) -> String {
+    match (&l.plain, &l.synced) {
+        (Some(p), _) => p.clone(),
+        (None, Some(s)) => parse_lrc(s).into_iter().map(|(_, t)| t).collect::<Vec<_>>().join("\n"),
+        (None, None) => String::new(),
+    }
+}
+
+/// `[mm:ss.xx]text` lines (several stamps per line allowed) → (milliseconds, text), in time order.
+pub fn parse_lrc(lrc: &str) -> Vec<(u64, String)> {
+    let mut out = vec![];
+    for line in lrc.lines() {
+        let mut rest = line.trim_start();
+        let mut stamps = vec![];
+        // `rest` starts with '[' and the ']' sits at `close`.
+        while let Some(close) = rest.strip_prefix('[').and_then(|r| r.find(']').map(|e| e + 1)) {
+            match stamp_ms(&rest[1..close]) {
+                Some(ms) => stamps.push(ms),
+                None => break, // a tag like [ar:…]
+            }
+            rest = rest[close + 1..].trim_start();
+        }
+        for ms in stamps {
+            out.push((ms, rest.trim().to_string()));
+        }
+    }
+    out.sort_by_key(|(ms, _)| *ms);
+    out
+}
+
+fn stamp_ms(s: &str) -> Option<u64> {
+    let (m, rest) = s.split_once(':')?;
+    let m: u64 = m.trim().parse().ok()?;
+    let secs: f64 = rest.trim().parse().ok()?;
+    Some(m * 60_000 + (secs * 1000.0).round() as u64)
 }
 
 /// The song's file with Range support; errors go out as the envelope the client asked for.

@@ -38,6 +38,10 @@ section = "Music"
 # How Plex sees the library if it runs in a container or on another host:
 # path_map = { "/srv/music" = "/music" }
 
+# [lyrics]                                          # from LRCLIB, on by default; .lrc/.txt next to own tracks, database for Subsonic
+# external = "db-only"                              # or "missing-sidecars" to write next to Lidarr files too
+# interval = "6h"                                   # daemon pass; "0" off
+
 # [steam]                                           # game soundtracks from Steam, tags trusted, no MusicBrainz; see the docs
 # path = "/home/you/.local/share/Steam/steamapps/music"   # what the Steam client installed
 # username = "you"                                  # steamcmd account (log in once by hand); owned soundtracks are downloaded

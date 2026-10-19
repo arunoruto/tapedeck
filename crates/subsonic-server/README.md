@@ -23,6 +23,8 @@ mount wherever you like.
 - Browsing in both styles: ID3 (`getArtists`, `getArtist`, `getAlbum`, `getSong`,
   `getAlbumList2`) and folder (`getIndexes`, `getMusicDirectory`), grouped from the flat
   song list you return, so your ids stay yours.
+- Lyrics: `getLyricsBySongId` (the OpenSubsonic `songLyrics` extension, synced lines parsed
+  from LRC text) and the classic `getLyrics`, when your `Library` returns any.
 - `search2`/`search3`, `getRandomSongs`, `getPlaylists`/`getPlaylist`, `stream`/`download`
   with Range requests, `getCoverArt`, `scrobble` (now playing and submissions), `getUser`,
   `getLicense`, `getScanStatus`, `getOpenSubsonicExtensions`.

@@ -14,7 +14,7 @@ mod shelf;
 use std::path::PathBuf;
 
 pub use auth::token;
-pub use server::{Server, Trusted};
+pub use server::{Server, Trusted, parse_lrc};
 
 /// A playable track. `id`s are yours and opaque to the protocol; `album_id` and `artist_id`
 /// group songs into the album and artist views, so give every song of an album the same
@@ -56,6 +56,13 @@ pub struct Playlist {
     /// Seconds.
     pub duration: i64,
     pub cover_art: Option<String>,
+}
+
+/// Lyrics of a song: LRC text with `[mm:ss.xx]` stamps, plain text, or both.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Lyrics {
+    pub synced: Option<String>,
+    pub plain: Option<String>,
 }
 
 /// What an anonymous request wants to do; see [`Library::anonymous_may`].
@@ -133,6 +140,12 @@ pub trait Library: Send + Sync + 'static {
     /// parameter. The default drops reports.
     async fn scrobble(&self, _id: &str, _now_playing: bool, _at: Option<i64>, _client: &str) -> Result<(), Error> {
         Ok(())
+    }
+
+    /// Lyrics for a song, served through `getLyricsBySongId` (OpenSubsonic `songLyrics`) and
+    /// `getLyrics`. The default has none.
+    async fn lyrics(&self, _id: &str) -> Result<Option<Lyrics>, Error> {
+        Ok(None)
     }
 
     /// What a client without credentials may do when the server has none configured, or

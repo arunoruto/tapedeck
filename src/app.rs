@@ -47,7 +47,7 @@ pub struct App {
     lb: listenbrainz::ListenBrainz,
     pub(crate) mb: MusicBrainz,
     pub(crate) downloader: Box<dyn Downloader>,
-    targets: Vec<Box<dyn SyncTarget>>,
+    pub(crate) targets: Vec<Box<dyn SyncTarget>>,
     // ponytail: one command at a time; downloads and the sync tick never overlap. Per-command locking if this ever hurts.
     pub(crate) busy: tokio::sync::Mutex<()>,
     /// Files this process moved or replaced (old absolute path → new), so a backup taken later
@@ -381,6 +381,19 @@ impl App {
                         data(tx, json!(rows)).await
                     }
                 }
+            }
+            Command::Lyrics { action: crate::cli::LyricsCmd::Fetch { track, all, external, force } } => {
+                let sel = crate::lyrics::Selection { all, external_only: external, force, track, limit: None };
+                let report = self.lyrics_fetch(None, sel, tx).await?;
+                data(tx, json!(report)).await
+            }
+            Command::Lyrics { action: crate::cli::LyricsCmd::Show { track } } => {
+                let v = self.lyrics_show(track)?;
+                data(tx, v).await
+            }
+            Command::Lyrics { action: crate::cli::LyricsCmd::Status } => {
+                let v = self.lyrics_status()?;
+                data(tx, v).await
             }
             Command::Steam { action: crate::cli::SteamCmd::List } => {
                 let v = self.steam_list(tx).await?;
@@ -1376,6 +1389,14 @@ impl App {
                     info(tx, format!("failed {} - {}: {e:#}", t.artist, t.title)).await?;
                     failed += 1;
                 }
+            }
+        }
+
+        // Lyrics for what just arrived; a provider hiccup must not fail the sync.
+        if self.config.lyrics.enable && !done_ids.is_empty() {
+            let sel = crate::lyrics::Selection::default();
+            if let Err(e) = self.lyrics_fetch(Some(&done_ids), sel, tx).await {
+                info(tx, format!("lyrics: {e:#}")).await?;
             }
         }
 

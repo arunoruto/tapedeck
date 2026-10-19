@@ -13,7 +13,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use axum::Router;
-use subsonic_server::{Error, Library, Playlist, Scope, Server, Song};
+use subsonic_server::{Error, Library, Lyrics, Playlist, Scope, Server, Song};
 use tokio::sync::mpsc;
 
 use crate::{App, Event, app::remote_title, cli::Command, db::Track, http, library::is_uuid, steam::is_steam_id};
@@ -186,6 +186,12 @@ impl Library for Backend {
         }
         let _ = run.await;
         Ok(())
+    }
+
+    async fn lyrics(&self, id: &str) -> Result<Option<Lyrics>, Error> {
+        let Ok(id) = id.parse::<i64>() else { return Ok(None) };
+        let row = self.app.db().lyrics_get(id).map_err(internal)?;
+        Ok(row.filter(|r| r.status == "found").map(|r| Lyrics { synced: r.synced, plain: r.plain }))
     }
 
     fn anonymous_may(&self, scope: Scope) -> bool {

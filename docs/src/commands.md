@@ -18,6 +18,7 @@
 | `td remote ls` / `td remote rm GLOB [--yes]` | List or bulk-delete playlists on a sync target; `rm` backs up first |
 | `td remote backup [GLOB]` / `td remote restore FILE` | Save target playlists as m3u8 + JSON, or recreate one from such a file |
 | `td request URL\|"Artist - Title" [--pick N] [--video]` | Request one song: identify, fetch, file, add to this year's Requests playlist |
+| `td lyrics fetch [--all] [--external] [--force] [TRACK]` / `td lyrics show TRACK` / `td lyrics status` | Lyrics from LRCLIB as sidecars and in the database; see [Lyrics](lyrics.md) |
 | `td steam list` / `td steam sync` | Steam soundtracks: what the client installed or the account owns, and import the new ones; see [Steam soundtracks](steam.md) |
 | `td external scan` / `td external dedupe [--dry-run]` | Index read-only libraries (Lidarr) and replace own copies of recordings they hold |
 | `td remote relink --from DIR` | Point backup entries under DIR at the library's copy of the same recording; run before deleting an imported folder |

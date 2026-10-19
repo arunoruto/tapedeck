@@ -18,6 +18,35 @@ pub struct Artist {
 }
 
 /// A file in a read-only external library.
+/// One row of `lyrics`.
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+pub struct LyricsRow {
+    pub track_id: i64,
+    pub status: String,
+    pub source: Option<String>,
+    pub source_id: Option<String>,
+    pub synced: Option<String>,
+    pub plain: Option<String>,
+    pub sidecar: Option<String>,
+    pub fetched_at: i64,
+}
+
+fn lyrics_row(r: &Row) -> rusqlite::Result<LyricsRow> {
+    Ok(LyricsRow {
+        track_id: r.get(0)?,
+        status: r.get(1)?,
+        source: r.get(2)?,
+        source_id: r.get(3)?,
+        synced: r.get(4)?,
+        plain: r.get(5)?,
+        sidecar: r.get(6)?,
+        fetched_at: r.get(7)?,
+    })
+}
+
+const LYRICS_SELECT: &str =
+    "SELECT track_id, status, source, source_id, synced, plain, sidecar, fetched_at FROM lyrics";
+
 #[derive(Serialize, Clone, Debug)]
 pub struct ExternalFile {
     pub path: String,
@@ -272,6 +301,40 @@ impl Db {
         let mut st = self.0.prepare(&format!("{EXTERNAL_SELECT} ORDER BY (path LIKE '%.flac') DESC, path"))?;
         let rows = st.query_map([], external_row)?;
         Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    pub fn lyrics_get(&self, track_id: i64) -> Result<Option<LyricsRow>> {
+        Ok(self.0.query_row(&format!("{LYRICS_SELECT} WHERE track_id = ?1"), [track_id], lyrics_row).optional()?)
+    }
+
+    pub fn lyrics_all(&self) -> Result<Vec<LyricsRow>> {
+        let mut st = self.0.prepare(LYRICS_SELECT)?;
+        let rows = st.query_map([], lyrics_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    pub fn lyrics_set(&self, r: &LyricsRow) -> Result<()> {
+        self.0.execute(
+            "INSERT INTO lyrics (track_id, status, source, source_id, synced, plain, sidecar, fetched_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(track_id) DO UPDATE SET status = excluded.status, source = excluded.source,
+                 source_id = excluded.source_id, synced = excluded.synced, plain = excluded.plain,
+                 sidecar = COALESCE(excluded.sidecar, lyrics.sidecar), fetched_at = excluded.fetched_at",
+            params![r.track_id, r.status, r.source, r.source_id, r.synced, r.plain, r.sidecar, r.fetched_at],
+        )?;
+        Ok(())
+    }
+
+    /// Tracks with a file that have no lyrics row, or a miss older than `retry_before` (Unix
+    /// seconds); with `everything`, every track with a file.
+    pub fn lyrics_candidates(&self, retry_before: i64, everything: bool) -> Result<Vec<Track>> {
+        let sql = format!(
+            "{TRACK_SELECT} LEFT JOIN lyrics l ON l.track_id = t.id
+             WHERE t.path IS NOT NULL AND t.status IN ('ready', 'external')
+               AND (?2 OR l.track_id IS NULL OR (l.status = 'missing' AND l.fetched_at < ?1))
+             ORDER BY t.id"
+        );
+        self.query_tracks(&sql, params![retry_before, everything])
     }
 
     pub fn external_count(&self) -> Result<i64> {

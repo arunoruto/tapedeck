@@ -100,3 +100,17 @@ CREATE TABLE IF NOT EXISTS listens (
     listened_at INTEGER NOT NULL,
     attempts    INTEGER NOT NULL DEFAULT 0
 );
+
+-- Lyrics per track: what LRCLIB (or a sidecar already on disk) said. `sidecar` is the
+-- extension of the file tapedeck wrote next to the audio (lrc/txt), if any; a miss is retried
+-- after [lyrics] retry_after.
+CREATE TABLE IF NOT EXISTS lyrics (
+    track_id   INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
+    status     TEXT NOT NULL,                              -- found | missing | instrumental
+    source     TEXT,                                       -- file | lrclib
+    source_id  TEXT,
+    synced     TEXT,
+    plain      TEXT,
+    sidecar    TEXT,
+    fetched_at INTEGER NOT NULL
+);

@@ -45,7 +45,8 @@ pub fn scope_of(cmd: &Command) -> &'static str {
         | Command::PlaylistTracks { .. }
         | Command::RemotePlaylists
         | Command::Artists
-        | Command::Artist { folder: None, unpin: false, .. } => "read",
+        | Command::Artist { folder: None, unpin: false, .. }
+        | Command::Lyrics { action: crate::cli::LyricsCmd::Show { .. } | crate::cli::LyricsCmd::Status } => "read",
         Command::Listen { .. } => "listen",
         Command::Request { .. } => "request",
         Command::Sync { .. } => "sync",

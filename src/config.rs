@@ -43,6 +43,9 @@ pub struct Config {
     /// Game soundtracks bought on Steam, imported as they are (tags trusted, no MusicBrainz).
     #[serde(default)]
     pub steam: Steam,
+    /// Lyrics from LRCLIB, as sidecar files for Plex and in the database for Subsonic and the TUI.
+    #[serde(default)]
+    pub lyrics: Lyrics,
     /// The daemon's HTTP API for `td` on other machines; off unless `listen` is set.
     #[serde(default)]
     pub server: Server,
@@ -78,6 +81,52 @@ pub struct Subsonic {
     pub user: Option<String>,
     pub password: Option<String>,
     pub password_file: Option<PathBuf>,
+}
+
+/// `[lyrics]`. On by default: LRCLIB is open data and sidecars go only into tapedeck's own
+/// library. `external` says what happens next to external (Lidarr) files: "db-only" keeps the
+/// lyrics in the database for Subsonic and the TUI, "missing-sidecars" also writes .lrc/.txt
+/// where none exists (never audio, never an existing sidecar).
+#[derive(Deserialize, Clone, Debug)]
+#[serde(deny_unknown_fields)]
+pub struct Lyrics {
+    #[serde(default = "default_true")]
+    pub enable: bool,
+    /// Write .lrc/.txt next to own tracks.
+    #[serde(default = "default_true")]
+    pub write_sidecars: bool,
+    #[serde(default = "default_lyrics_external")]
+    pub external: String,
+    /// A miss is asked again after this long (LRCLIB grows).
+    #[serde(default = "default_lyrics_retry")]
+    pub retry_after: String,
+    /// How often the daemon runs a pass over tracks without lyrics; "0" turns it off.
+    #[serde(default = "default_lyrics_interval")]
+    pub interval: String,
+}
+
+impl Default for Lyrics {
+    fn default() -> Self {
+        Self {
+            enable: true,
+            write_sidecars: true,
+            external: default_lyrics_external(),
+            retry_after: default_lyrics_retry(),
+            interval: default_lyrics_interval(),
+        }
+    }
+}
+
+fn default_lyrics_external() -> String {
+    "db-only".into()
+}
+
+fn default_lyrics_retry() -> String {
+    "30d".into()
+}
+
+fn default_lyrics_interval() -> String {
+    "6h".into()
 }
 
 /// `[steam]`. Either or both: `path` imports what the Steam client installed, `username`
@@ -385,6 +434,11 @@ impl Config {
         }
         parse_duration(&cfg.external.scan_interval, "external.scan_interval")?;
         parse_duration(&cfg.steam.interval, "steam.interval")?;
+        parse_duration(&cfg.lyrics.retry_after, "lyrics.retry_after")?;
+        parse_duration(&cfg.lyrics.interval, "lyrics.interval")?;
+        if !matches!(cfg.lyrics.external.as_str(), "db-only" | "missing-sidecars") {
+            bail!("lyrics.external must be db-only or missing-sidecars");
+        }
         for t in &cfg.sync.targets {
             if t == "plex" && cfg.sync.plex.is_none() {
                 bail!("sync.targets lists plex but [sync.plex] is missing");
@@ -451,6 +505,14 @@ impl Config {
     /// Zero means no periodic scan.
     pub fn external_scan_interval(&self) -> Result<Duration> {
         parse_duration(&self.external.scan_interval, "external.scan_interval")
+    }
+
+    pub fn lyrics_retry_after(&self) -> Result<Duration> {
+        parse_duration(&self.lyrics.retry_after, "lyrics.retry_after")
+    }
+
+    pub fn lyrics_interval(&self) -> Result<Duration> {
+        parse_duration(&self.lyrics.interval, "lyrics.interval")
     }
 
     pub fn steam_interval(&self) -> Result<Duration> {

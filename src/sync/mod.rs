@@ -37,6 +37,10 @@ pub trait SyncTarget: Send + Sync {
     /// Tracks of one playlist, in order.
     async fn playlist_items(&self, id: &str) -> Result<Vec<RemoteItem>>;
     async fn delete_playlist(&self, id: &str) -> Result<()>;
+    /// These files gained a lyrics sidecar; have the target pick it up. Default: nothing to do.
+    async fn refresh_lyrics(&self, _files: &[PathBuf]) -> Result<()> {
+        Ok(())
+    }
 }
 
 /// `*` matches any run of characters, `?` one character. Enough for "Weekly-Jams-*".
