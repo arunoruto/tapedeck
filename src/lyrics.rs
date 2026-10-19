@@ -32,7 +32,7 @@ use tokio::sync::mpsc::Sender;
 
 use crate::{
     App, Event,
-    app::{info, progress},
+    app::{info, progress_at},
     db::{ExternalFile, LyricsRow, Track},
     external::{is_external, norm},
     musicbrainz::{strip_feat, version_words},
@@ -563,7 +563,7 @@ impl App {
                 report.stopped = Some("5 provider errors in a row; the next pass continues".into());
                 break;
             }
-            progress(tx, format!("lyrics {}/{}: {} - {}", i + 1, subjects.len(), s.artist, s.title)).await?;
+            progress_at(tx, i + 1, subjects.len(), format!("{} - {}", s.artist, s.title)).await?;
             let had_file = !sel.force && read_sidecar(&s.audio).is_some();
             if !had_file {
                 if calls > 0 {

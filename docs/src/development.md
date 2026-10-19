@@ -17,3 +17,8 @@ prebuilt binaries and pushes the container to `ghcr.io/arunoruto/tapedeck` as `<
 commit without moving `latest`. Sync targets and download backends are each one small trait; the
 [architecture](architecture.md#extension-points) page says where. Keep the docs human-sounding;
 design decisions go into the architecture page's design notes.
+
+Commit messages follow [Conventional Commits](https://www.conventionalcommits.org/):
+`feat(lyrics): …`, `fix(subsonic): …`, `docs: …`, `ci: …`, `refactor: …`, `chore: …`, with a
+`!` or a `BREAKING CHANGE:` footer for anything that changes behaviour people rely on, so a
+changelog can be generated for a release.

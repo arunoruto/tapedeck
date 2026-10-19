@@ -1,5 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
+use indicatif::{ProgressBar, ProgressStyle};
 use tapedeck::{
     Event,
     cli::{Cli, Command},
@@ -28,37 +29,64 @@ async fn main() -> Result<()> {
     let worker = tokio::spawn(async move { daemon::dispatch(&config, cmd, tx).await });
 
     let mut failed = false;
-    // Progress lines overwrite each other on a terminal and are dropped from logs/pipes.
+    // On a terminal, long jobs get a bar (or a spinner); everything else prints above it. In a
+    // pipe or a log, progress is dropped and the rest stays plain lines.
     let tty = std::io::IsTerminal::is_terminal(&std::io::stderr());
-    let mut progressing = false;
+    let mut bar: Option<ProgressBar> = None;
+    let say = |bar: &Option<ProgressBar>, line: String| match bar {
+        Some(b) => b.println(line),
+        None => eprintln!("{line}"),
+    };
     while let Some(ev) = rx.recv().await {
         if cli.json {
             println!("{}", serde_json::to_string(&ev)?);
-        } else if progressing && !matches!(ev, Event::Progress { .. }) {
-            eprint!("\r\x1b[2K");
-            progressing = false;
+            if matches!(ev, Event::Error { .. }) {
+                failed = true;
+            }
+            continue;
         }
         match ev {
-            Event::Progress { msg } if !cli.json && tty => {
-                // One line only: a wrapped progress line cannot be cleared and glues to the next.
-                let width = crossterm::terminal::size().map(|(w, _)| w as usize).unwrap_or(80).saturating_sub(1);
-                let line: String = msg.chars().take(width).collect();
-                eprint!("\r\x1b[2K{line}");
-                progressing = true;
+            Event::Progress { msg, current, total } if tty => {
+                let b = bar.get_or_insert_with(|| {
+                    let b = ProgressBar::new_spinner();
+                    b.enable_steady_tick(std::time::Duration::from_millis(120));
+                    b
+                });
+                match (current, total) {
+                    (Some(cur), Some(len)) if len > 0 => {
+                        if b.length() != Some(len) {
+                            b.set_style(
+                                ProgressStyle::with_template(
+                                    "{spinner:.cyan} [{bar:28.cyan/dim}] {pos}/{len} {eta:>4} {wide_msg}",
+                                )
+                                .expect("template")
+                                .progress_chars("━╸─"),
+                            );
+                            b.set_length(len);
+                        }
+                        b.set_position(cur.saturating_sub(1));
+                    }
+                    _ => b.set_style(ProgressStyle::with_template("{spinner:.cyan} {wide_msg}").expect("template")),
+                }
+                b.set_message(msg);
             }
-            Event::Info { msg } if !cli.json => eprintln!("{msg}"),
-            Event::Data { data } if !cli.json => println!("{}", tapedeck::render::render(&data)),
-            Event::Error { msg } => {
-                failed = true;
-                if !cli.json {
-                    eprintln!("error: {msg}");
+            Event::Progress { .. } => {}
+            Event::Info { msg } => say(&bar, msg),
+            Event::Data { data } => {
+                let text = tapedeck::render::render(&data);
+                match &bar {
+                    Some(b) => b.suspend(|| println!("{text}")),
+                    None => println!("{text}"),
                 }
             }
-            _ => {}
+            Event::Error { msg } => {
+                failed = true;
+                say(&bar, format!("error: {msg}"));
+            }
         }
     }
-    if progressing {
-        eprintln!();
+    if let Some(b) = &bar {
+        b.finish_and_clear();
     }
     worker.await??;
     if failed {

@@ -351,7 +351,7 @@ impl Tui {
                     self.progressing = false;
                     self.log.push(msg);
                 }
-                TdEvent::Progress { msg } => {
+                TdEvent::Progress { msg, .. } => {
                     if self.progressing {
                         self.log.pop();
                     }

@@ -29,9 +29,14 @@ pub enum Event {
     Info {
         msg: String,
     },
-    /// A counter that replaces the previous one on a terminal ("resolving 812/1582 …").
+    /// What is being worked on right now, replacing the previous one on a terminal. With
+    /// `current`/`total` the CLI draws a bar; without, a spinner with the text.
     Progress {
         msg: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        current: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        total: Option<u64>,
     },
     Data {
         data: Value,
@@ -238,7 +243,8 @@ impl App {
                         continue;
                     }
                     self.backup(target, &hits, &self.config.playlist_dir().join("backup"), tx).await?;
-                    for p in &hits {
+                    for (i, p) in hits.iter().enumerate() {
+                        progress_at(tx, i + 1, hits.len(), format!("deleting {}", p.title)).await?;
                         target.delete_playlist(&p.id).await?;
                         info(
                             tx,
@@ -444,7 +450,7 @@ impl App {
         // a real run (a MusicBrainz rename, or a pin set or lifted).
         let mut folder_changes: Vec<(String, String, usize)> = vec![];
         for (i, t) in tracks.iter().enumerate() {
-            progress(tx, format!("checking {}/{total}: {} - {}", i + 1, t.artist, t.title)).await?;
+            progress_at(tx, i + 1, total, format!("checking {} - {}", t.artist, t.title)).await?;
             let r = match self.mb.recording(&t.recording_mbid).await {
                 Ok(r) => r,
                 Err(e) => {
@@ -1035,7 +1041,7 @@ impl App {
         let mut unresolved = 0;
         let total = outside.len();
         for (i, path) in outside.into_iter().enumerate() {
-            progress(tx, format!("resolving {}/{total}: {}", i + 1, path.display())).await?;
+            progress_at(tx, i + 1, total, format!("resolving {}", path.display())).await?;
             let found = library::inspect(&path);
             let mbid = match &found.recording_mbid {
                 Some(m) => Some(m.clone()),
@@ -1394,6 +1400,8 @@ impl App {
                 continue;
             }
             info(tx, format!("downloading {} - {}", t.artist, t.title)).await?;
+            progress_at(tx, done + failed + from_external + 1, wanted.len(), format!("{} - {}", t.artist, t.title))
+                .await?;
             let result = async {
                 let got = self.downloader.download(t, &cfg.tmp_dir()).await?;
                 let rel = library::file_track(&cfg.library, &cfg.path_template, t, &got.path, false)?;
@@ -1715,7 +1723,14 @@ pub(crate) async fn info(tx: &Sender<Event>, msg: String) -> Result<()> {
 }
 
 pub(crate) async fn progress(tx: &Sender<Event>, msg: String) -> Result<()> {
-    tx.send(Event::Progress { msg }).await.context("client went away")
+    tx.send(Event::Progress { msg, current: None, total: None }).await.context("client went away")
+}
+
+/// Step `current` of `total`, `msg` being the item in hand.
+pub(crate) async fn progress_at(tx: &Sender<Event>, current: usize, total: usize, msg: String) -> Result<()> {
+    tx.send(Event::Progress { msg, current: Some(current as u64), total: Some(total as u64) })
+        .await
+        .context("client went away")
 }
 
 async fn data(tx: &Sender<Event>, data: Value) -> Result<()> {
