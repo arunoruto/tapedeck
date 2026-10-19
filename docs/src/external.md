@@ -1,5 +1,8 @@
 # External libraries
 
+External files are also served to [Subsonic clients](subsonic.md), with [lyrics](lyrics.md)
+from the database, so a Lidarr library is browsable and playable through tapedeck too.
+
 Music managed by something else, say Lidarr's folder, is often better quality than a YouTube
 rip and should not be downloaded again. List those folders and tapedeck treats them as
 read-only sources of recordings:

@@ -105,10 +105,12 @@ CREATE TABLE IF NOT EXISTS listens (
 -- extension of the file tapedeck wrote next to the audio (lrc/txt), if any; a miss is retried
 -- after [lyrics] retry_after.
 CREATE TABLE IF NOT EXISTS lyrics (
-    track_id   INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
+    key        TEXT PRIMARY KEY,                           -- t:<track id> | x:<external file path>
     status     TEXT NOT NULL,                              -- found | missing | instrumental
     source     TEXT,                                       -- file | lrclib
     source_id  TEXT,
+    method     TEXT,                                       -- file | get | get-primary | search | search-primary
+    delta_ms   INTEGER,                                    -- provider length minus ours
     synced     TEXT,
     plain      TEXT,
     sidecar    TEXT,

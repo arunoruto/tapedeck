@@ -9,9 +9,17 @@ nothing: LRCLIB is open data, and files are written only into tapedeck's own lib
 ## What happens
 
 - After every download, and on `[lyrics] interval` (default every six hours) for anything
-  still without lyrics, tapedeck looks each track up by artist, title, album and length, then
-  by search as a fallback, one request a second. A miss is remembered and asked again after
-  `retry_after` (default thirty days), because LRCLIB grows.
+  still without lyrics, tapedeck looks each song up by artist, title, album and length, then
+  by search, then both again with the primary artist ("Calvin Harris feat. Ellie Goulding"
+  becomes "Calvin Harris") and with video junk such as "(Official Music Video)" removed from
+  the title; one request a second. A miss is remembered and asked again after `retry_after`
+  (default thirty days), because LRCLIB grows. A provider hiccup leaves the song untried for
+  the next pass.
+- Matching is strict, because LRCLIB's search happily offers the acoustic version or the
+  wrong length: a hit needs the same title (no extra "acoustic", "live", "remix"…), an artist
+  in common, a known length within two seconds of ours, and synced lyrics whose last line
+  lies inside the song; otherwise the plain text is used. How each song was matched and the
+  length difference are kept, so `td lyrics status` shows how many came from a search.
 - Synced lyrics become `<same name>.lrc`, plain ones `<same name>.txt`, written atomically next
   to the file. An existing sidecar is never overwritten (unless `--force`) and is indexed
   instead, so a library that already has `.lrc` files is simply read. Audio files are never
@@ -26,10 +34,11 @@ nothing: LRCLIB is open data, and files are written only into tapedeck's own lib
 
 ## External libraries
 
-For tracks in [external libraries](external.md) such as Lidarr's, the default is
-`external = "db-only"`: lyrics go into the database only, so Subsonic apps and the TUI show
-them, Plexamp does not, and nothing is written into folders tapedeck does not own. Lidarr's
-own `.lrc` files are read and indexed either way.
+Every file of an [external library](external.md) such as Lidarr's is covered, not only the
+ones that match a tapedeck track. The default is `external = "db-only"`: lyrics go into the
+database only, so Subsonic apps and the TUI show them, Plexamp does not, and nothing is
+written into folders tapedeck does not own. Lidarr's own `.lrc` files are read and indexed
+either way.
 
 Set `external = "missing-sidecars"` to also write `.lrc`/`.txt` next to external files that
 have none. Existing sidecars and audio are still never touched. On NixOS the external paths
@@ -45,6 +54,8 @@ td lyrics fetch               # tracks without lyrics that are due (what the dae
 td lyrics fetch --all         # every track without lyrics, ignoring the retry schedule
 td lyrics fetch --external    # only external tracks
 td lyrics fetch 123 --force   # ask again and overwrite the sidecar
+td lyrics reject 123          # wrong lyrics: drop the sidecar tapedeck wrote, blocklist the source, try the next
+td lyrics check [--fix]       # synced lyrics that run past the end of their song; --fix rejects and refetches them
 ```
 
 ## Configuration

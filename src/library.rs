@@ -251,6 +251,10 @@ pub struct Found {
     pub title: String,
     pub recording_mbid: Option<String>,
     pub duration_ms: Option<i64>,
+    pub album: Option<String>,
+    pub album_artist: Option<String>,
+    pub track_no: Option<i64>,
+    pub year: Option<i64>,
 }
 
 /// Audio files under `dir` with size and mtime, no tag reading: the cheap pass an incremental
@@ -311,6 +315,7 @@ pub fn inspect(path: &Path) -> Found {
     let (mut artist, mut title) = parse_stem(path.file_stem().and_then(|s| s.to_str()).unwrap_or(""));
     let mut recording_mbid = None;
     let mut duration_ms = None;
+    let (mut album, mut album_artist, mut track_no, mut year) = (None, None, None, None);
     if let Ok(file) = Probe::open(path).and_then(|p| p.read()) {
         duration_ms = Some(file.properties().duration().as_millis() as i64);
         // Picard writes MUSICBRAINZ_TRACKID / a UFID frame, Explo writes ID3 TXXX frames called
@@ -336,6 +341,14 @@ pub fn inspect(path: &Path) -> Found {
             if let Some(t) = tag.title() {
                 title = t.to_string();
             }
+            album = tag.album().map(|s| s.to_string()).filter(|s| !s.trim().is_empty());
+            album_artist = tag.get_string(ItemKey::AlbumArtist).map(str::to_string).filter(|s| !s.trim().is_empty());
+            track_no = tag.track().map(i64::from);
+            year = tag
+                .get_string(ItemKey::RecordingDate)
+                .or_else(|| tag.get_string(ItemKey::OriginalReleaseDate))
+                .and_then(|d| d.get(..4))
+                .and_then(|y| y.parse().ok());
         }
     }
     // lofty's generic tag drops TXXX frames with descriptions it doesn't know, which is exactly
@@ -359,7 +372,19 @@ pub fn inspect(path: &Path) -> Found {
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
-    Found { path: path.to_path_buf(), size, mtime, artist, title, recording_mbid, duration_ms }
+    Found {
+        path: path.to_path_buf(),
+        size,
+        mtime,
+        artist,
+        title,
+        recording_mbid,
+        duration_ms,
+        album,
+        album_artist,
+        track_no,
+        year,
+    }
 }
 
 fn is_recording_id_key(key: &str) -> bool {

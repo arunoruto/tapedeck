@@ -395,6 +395,14 @@ impl App {
                 let v = self.lyrics_status()?;
                 data(tx, v).await
             }
+            Command::Lyrics { action: crate::cli::LyricsCmd::Reject { track } } => {
+                let v = self.lyrics_reject(track, tx).await?;
+                data(tx, v).await
+            }
+            Command::Lyrics { action: crate::cli::LyricsCmd::Check { fix } } => {
+                let v = self.lyrics_check(fix, tx).await?;
+                data(tx, v).await
+            }
             Command::Steam { action: crate::cli::SteamCmd::List } => {
                 let v = self.steam_list(tx).await?;
                 data(tx, v).await
@@ -1306,6 +1314,20 @@ impl App {
         Ok(())
     }
 
+    /// A listen for a file that is not a track (an external library's), straight to ListenBrainz.
+    pub(crate) async fn listen_external(&self, e: &crate::db::ExternalFile, listened_at: Option<i64>) -> Result<()> {
+        ensure!(self.lb.has_token(), "no listenbrainz token on this side");
+        let t = Track {
+            recording_mbid: e.recording_mbid.clone().unwrap_or_default(),
+            title: e.title.clone(),
+            artist: e.artist.clone(),
+            album: e.album.clone().unwrap_or_default(),
+            duration_ms: e.duration_ms,
+            ..Default::default()
+        };
+        self.lb.submit_listen(&t, listened_at).await
+    }
+
     fn targets(&self, only: Option<&str>) -> Result<Vec<&dyn SyncTarget>> {
         let v: Vec<&dyn SyncTarget> =
             self.targets.iter().map(|t| t.as_ref()).filter(|t| only.is_none_or(|o| o == t.name())).collect();
@@ -1395,7 +1417,8 @@ impl App {
         // Lyrics for what just arrived; a provider hiccup must not fail the sync.
         if self.config.lyrics.enable && !done_ids.is_empty() {
             let sel = crate::lyrics::Selection::default();
-            if let Err(e) = self.lyrics_fetch(Some(&done_ids), sel, tx).await {
+            let keys: Vec<String> = done_ids.iter().map(|id| format!("t:{id}")).collect();
+            if let Err(e) = self.lyrics_fetch(Some(&keys), sel, tx).await {
                 info(tx, format!("lyrics: {e:#}")).await?;
             }
         }

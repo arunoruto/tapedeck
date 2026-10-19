@@ -10,13 +10,24 @@
 //! ListenBrainz token and retry queue apply. Sign-in is `[server.subsonic]`; without it every
 //! client is anonymous and gets the `[server] anonymous` scopes.
 
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use axum::Router;
 use subsonic_server::{Error, Library, Lyrics, Playlist, Scope, Server, Song};
 use tokio::sync::mpsc;
 
-use crate::{App, Event, app::remote_title, cli::Command, db::Track, http, library::is_uuid, steam::is_steam_id};
+use crate::{
+    App, Event,
+    app::remote_title,
+    cli::Command,
+    db::{ExternalFile, Track},
+    http,
+    library::is_uuid,
+    steam::is_steam_id,
+};
 
 /// The `/rest/*` router for this app, with `[server.subsonic]` credentials when configured.
 pub fn router(app: Arc<App>, anonymous: Vec<String>) -> Router {
@@ -64,17 +75,74 @@ fn internal(e: anyhow::Error) -> Error {
     Error::internal(format!("{e:#}"))
 }
 
+/// A stable id for a string that is not a number: FNV-1a, hex.
+fn fnv(s: &str) -> String {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for b in s.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x100000001b3);
+    }
+    format!("{h:016x}")
+}
+
+/// Files of external libraries (Lidarr's) that no track stands for, as songs: ids are
+/// `x<hash of path>`, albums `xa<hash>`, artists `xr<hash>`, all derived from the tags.
+fn external_song(e: &ExternalFile) -> Song {
+    let album_artist = e.album_artist.clone().or_else(|| Some(e.artist.clone())).unwrap_or_default();
+    let album = e.album.clone().unwrap_or_else(|| "Unknown album".into());
+    let album_id = format!("xa{}", fnv(&format!("{album_artist}\u{1f}{album}")));
+    let rel =
+        Path::new(&e.path).strip_prefix(&e.root).map(|p| p.to_string_lossy().into_owned()).unwrap_or(e.path.clone());
+    Song {
+        id: format!("x{}", fnv(&e.path)),
+        title: e.title.clone(),
+        artist: e.artist.clone(),
+        album_artist: album_artist.clone(),
+        album,
+        artist_id: format!("xr{}", fnv(&album_artist)),
+        track: e.track_no,
+        year: e.year,
+        duration: e.duration_ms.map(|ms| ms / 1000),
+        path: rel,
+        cover_art: Some(album_id.clone()),
+        music_brainz_id: e.recording_mbid.clone().filter(|m| is_uuid(m)),
+        album_music_brainz_id: None,
+        artist_music_brainz_id: None,
+        album_id,
+    }
+}
+
+impl Backend {
+    /// External files not already represented by a track.
+    fn externals(&self) -> Result<Vec<ExternalFile>, Error> {
+        let tracks = self.app.db().all_tracks().map_err(internal)?;
+        let taken: std::collections::HashSet<&str> =
+            tracks.iter().filter(|t| t.status == "external").filter_map(|t| t.path.as_deref()).collect();
+        let all = self.app.db().external_all().map_err(internal)?;
+        Ok(all.into_iter().filter(|e| !taken.contains(e.path.as_str())).collect())
+    }
+
+    fn external_by_song_id(&self, id: &str) -> Result<Option<ExternalFile>, Error> {
+        let Some(hash) = id.strip_prefix('x').filter(|h| h.len() == 16) else { return Ok(None) };
+        Ok(self.externals()?.into_iter().find(|e| fnv(&e.path) == hash))
+    }
+}
+
 #[async_trait::async_trait]
 impl Library for Backend {
     async fn songs(&self) -> Result<Vec<Song>, Error> {
         let tracks = self.app.db().all_tracks().map_err(internal)?;
-        Ok(tracks.iter().filter(|t| playable(t)).map(song).collect())
+        let mut songs: Vec<Song> = tracks.iter().filter(|t| playable(t)).map(song).collect();
+        songs.extend(self.externals()?.iter().map(external_song));
+        Ok(songs)
     }
 
     async fn song(&self, id: &str) -> Result<Option<Song>, Error> {
-        let Ok(id) = id.parse::<i64>() else { return Ok(None) };
-        let track = self.app.db().track_by_id(id).map_err(internal)?;
-        Ok(track.filter(playable).map(|t| song(&t)))
+        if let Ok(id) = id.parse::<i64>() {
+            let track = self.app.db().track_by_id(id).map_err(internal)?;
+            return Ok(track.filter(playable).map(|t| song(&t)));
+        }
+        Ok(self.external_by_song_id(id)?.map(|e| external_song(&e)))
     }
 
     async fn playlists(&self) -> Result<Vec<Playlist>, Error> {
@@ -109,7 +177,9 @@ impl Library for Backend {
     }
 
     async fn file(&self, id: &str) -> Result<Option<PathBuf>, Error> {
-        let Ok(id) = id.parse::<i64>() else { return Ok(None) };
+        let Ok(id) = id.parse::<i64>() else {
+            return Ok(self.external_by_song_id(id)?.map(|e| PathBuf::from(e.path)));
+        };
         let track = self.app.db().track_by_id(id).map_err(internal)?;
         // External tracks carry an absolute path; `join` keeps it.
         Ok(track.filter(playable).and_then(|t| t.path).map(|rel| self.app.config.library.join(rel)))
@@ -123,10 +193,20 @@ impl Library for Backend {
             Ok(n) => self.app.db().track_by_id(n).map_err(internal)?.map(|t| t.album_mbid).unwrap_or_default(),
             Err(_) => id.to_string(),
         };
-        if is_steam_id(&mbid) {
-            let tracks = self.app.db().all_tracks().map_err(internal)?;
-            let file = tracks.iter().find(|t| t.album_mbid == mbid && playable(t)).and_then(|t| t.path.clone());
-            let file = file.map(|rel| self.app.config.library.join(rel));
+        if is_steam_id(&mbid) || mbid.starts_with("xa") {
+            // Steam albums and external albums: the picture in the first file, or the folder's.
+            let file = if is_steam_id(&mbid) {
+                let tracks = self.app.db().all_tracks().map_err(internal)?;
+                let rel = tracks.iter().find(|t| t.album_mbid == mbid && playable(t)).and_then(|t| t.path.clone());
+                rel.map(|rel| self.app.config.library.join(rel))
+            } else {
+                self.externals()?
+                    .iter()
+                    .map(external_song)
+                    .zip(self.externals()?)
+                    .find(|(s, _)| s.album_id == mbid)
+                    .map(|(_, e)| PathBuf::from(e.path))
+            };
             return tokio::task::spawn_blocking(move || file.and_then(|f| crate::steam::cover_for(&f)))
                 .await
                 .map_err(Error::internal);
@@ -170,8 +250,28 @@ impl Library for Backend {
     /// Through `td listen`, so the daemon's token check and queue apply.
     // ponytail: the client's timestamp is dropped, the listen is stamped on arrival; thread it
     // through Command::Listen when a client that submits backlogs shows up.
-    async fn scrobble(&self, id: &str, now_playing: bool, _at: Option<i64>, client: &str) -> Result<(), Error> {
-        let track = id.parse::<i64>().map_err(|_| Error::not_found("no such song"))?;
+    async fn scrobble(&self, id: &str, now_playing: bool, at: Option<i64>, client: &str) -> Result<(), Error> {
+        let Ok(track) = id.parse::<i64>() else {
+            // An external file: no track row, so straight to ListenBrainz.
+            let e = self.external_by_song_id(id)?.ok_or_else(|| Error::not_found("no such song"))?;
+            tracing::info!(
+                "subsonic: {} external {} - {} from {client}",
+                if now_playing { "playing now" } else { "scrobble" },
+                e.artist,
+                e.title
+            );
+            let listened_at = if now_playing {
+                None
+            } else {
+                Some(at.unwrap_or_else(|| {
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs() as i64)
+                        .unwrap_or(0)
+                }))
+            };
+            return self.app.listen_external(&e, listened_at).await.map_err(internal);
+        };
         tracing::info!(
             "subsonic: {} track {track} from {client}",
             if now_playing { "playing now" } else { "scrobble" }
@@ -189,8 +289,14 @@ impl Library for Backend {
     }
 
     async fn lyrics(&self, id: &str) -> Result<Option<Lyrics>, Error> {
-        let Ok(id) = id.parse::<i64>() else { return Ok(None) };
-        let row = self.app.db().lyrics_get(id).map_err(internal)?;
+        let key = match id.parse::<i64>() {
+            Ok(n) => format!("t:{n}"),
+            Err(_) => match self.external_by_song_id(id)? {
+                Some(e) => format!("x:{}", e.path),
+                None => return Ok(None),
+            },
+        };
+        let row = self.app.db().lyrics_get(&key).map_err(internal)?;
         Ok(row.filter(|r| r.status == "found").map(|r| Lyrics { synced: r.synced, plain: r.plain }))
     }
 

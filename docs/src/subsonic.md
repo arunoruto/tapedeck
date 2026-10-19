@@ -39,7 +39,9 @@ bearer token of the HTTP API passes too.
   Plex shows (`Weekly Jams`), older editions under their ListenBrainz name, plus the
   Requests playlists from the Telegram bot.
 - **Artists and albums**: the library grouped by MusicBrainz release and artist, so names
-  follow MusicBrainz and ids survive renames. Search covers artists, albums and titles.
+  follow MusicBrainz and ids survive renames, plus every file of the
+  [external libraries](external.md) (Lidarr's), grouped by its tags. Search covers artists,
+  albums and titles.
 - **Cover art**: from the Cover Art Archive by release id, fetched once per size and kept in
   `covers/` next to the database.
 - **Streaming**: the original files with seeking, own and [external](external.md) ones alike.

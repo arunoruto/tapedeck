@@ -111,7 +111,8 @@ impl App {
                     continue; // still being written; next scan
                 }
                 seen.insert(path.clone());
-                if indexed.get(&path).is_some_and(|e| e.size == size && e.mtime == mtime) {
+                // Unchanged files are skipped, except those indexed before album tags were kept.
+                if indexed.get(&path).is_some_and(|e| e.size == size && e.mtime == mtime && e.album.is_some()) {
                     continue;
                 }
                 let found = library::inspect(&path);
@@ -124,6 +125,10 @@ impl App {
                     artist: found.artist,
                     title: found.title,
                     duration_ms: found.duration_ms,
+                    album: found.album,
+                    album_artist: found.album_artist,
+                    track_no: found.track_no,
+                    year: found.year,
                 };
                 self.db().upsert_external(&e)?;
                 if indexed.contains_key(&path) {
@@ -305,6 +310,10 @@ mod tests {
             artist: artist.into(),
             title: title.into(),
             duration_ms: Some(ms),
+            album: None,
+            album_artist: None,
+            track_no: None,
+            year: None,
         };
         let index = vec![
             ext("/r/a.flac", Some("id-1"), "Linkin Park", "Numb", 187_000),

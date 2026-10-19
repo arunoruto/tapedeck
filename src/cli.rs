@@ -196,6 +196,14 @@ pub enum LyricsCmd {
     Show { track: i64 },
     /// Coverage per library.
     Status,
+    /// These lyrics are wrong: drop the sidecar tapedeck wrote, blocklist the source and try the
+    /// next candidate.
+    Reject { track: i64 },
+    /// Find synced lyrics that run past the end of their song; --fix rejects and refetches them.
+    Check {
+        #[arg(long)]
+        fix: bool,
+    },
 }
 
 #[derive(Subcommand, Serialize, Deserialize, Debug, Clone)]

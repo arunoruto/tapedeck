@@ -18,13 +18,15 @@ pub struct Artist {
 }
 
 /// A file in a read-only external library.
-/// One row of `lyrics`.
+/// One row of `lyrics`, keyed `t:<track id>` or `x:<external file path>`.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct LyricsRow {
-    pub track_id: i64,
+    pub key: String,
     pub status: String,
     pub source: Option<String>,
     pub source_id: Option<String>,
+    pub method: Option<String>,
+    pub delta_ms: Option<i64>,
     pub synced: Option<String>,
     pub plain: Option<String>,
     pub sidecar: Option<String>,
@@ -33,19 +35,21 @@ pub struct LyricsRow {
 
 fn lyrics_row(r: &Row) -> rusqlite::Result<LyricsRow> {
     Ok(LyricsRow {
-        track_id: r.get(0)?,
+        key: r.get(0)?,
         status: r.get(1)?,
         source: r.get(2)?,
         source_id: r.get(3)?,
-        synced: r.get(4)?,
-        plain: r.get(5)?,
-        sidecar: r.get(6)?,
-        fetched_at: r.get(7)?,
+        method: r.get(4)?,
+        delta_ms: r.get(5)?,
+        synced: r.get(6)?,
+        plain: r.get(7)?,
+        sidecar: r.get(8)?,
+        fetched_at: r.get(9)?,
     })
 }
 
 const LYRICS_SELECT: &str =
-    "SELECT track_id, status, source, source_id, synced, plain, sidecar, fetched_at FROM lyrics";
+    "SELECT key, status, source, source_id, method, delta_ms, synced, plain, sidecar, fetched_at FROM lyrics";
 
 #[derive(Serialize, Clone, Debug)]
 pub struct ExternalFile {
@@ -57,6 +61,11 @@ pub struct ExternalFile {
     pub artist: String,
     pub title: String,
     pub duration_ms: Option<i64>,
+    /// From the file's tags, for browsing the external library (`None` until rescanned).
+    pub album: Option<String>,
+    pub album_artist: Option<String>,
+    pub track_no: Option<i64>,
+    pub year: Option<i64>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -123,8 +132,7 @@ const TRACK_SELECT: &str = "
     JOIN albums al ON al.id = t.album_id
     JOIN artists ar ON ar.id = al.artist_id";
 
-const EXTERNAL_SELECT: &str =
-    "SELECT path, root, size, mtime, recording_mbid, artist, title, duration_ms FROM external_files";
+const EXTERNAL_SELECT: &str = "SELECT path, root, size, mtime, recording_mbid, artist, title, duration_ms, album, album_artist, track_no, year FROM external_files";
 
 fn external_row(r: &Row) -> rusqlite::Result<ExternalFile> {
     Ok(ExternalFile {
@@ -136,6 +144,10 @@ fn external_row(r: &Row) -> rusqlite::Result<ExternalFile> {
         artist: r.get(5)?,
         title: r.get(6)?,
         duration_ms: r.get(7)?,
+        album: r.get(8)?,
+        album_artist: r.get(9)?,
+        track_no: r.get(10)?,
+        year: r.get(11)?,
     })
 }
 
@@ -166,7 +178,27 @@ impl Db {
             std::fs::create_dir_all(dir)?;
         }
         let conn = Connection::open(path).with_context(|| format!("opening {}", path.display()))?;
+        // The first `lyrics` table was keyed by track id; it is now keyed by a string so external
+        // files fit too. Move the old rows over once.
+        let old_lyrics: bool = conn
+            .query_row("SELECT count(*) FROM pragma_table_info('lyrics') WHERE name = 'track_id'", [], |r| {
+                r.get::<_, i64>(0)
+            })
+            .map(|n| n > 0)
+            .unwrap_or(false);
+        if old_lyrics {
+            conn.execute_batch("ALTER TABLE lyrics RENAME TO lyrics_v1")?;
+        }
         conn.execute_batch(include_str!("schema.sql"))?;
+        if old_lyrics {
+            conn.execute_batch(
+                "INSERT OR IGNORE INTO lyrics (key, status, source, source_id, method, synced, plain, sidecar, fetched_at)
+                 SELECT 't:' || track_id, status, source, source_id,
+                        CASE WHEN source = 'file' THEN 'file' ELSE 'get' END, synced, plain, sidecar, fetched_at
+                 FROM lyrics_v1;
+                 DROP TABLE lyrics_v1;",
+            )?;
+        }
         // Columns added after the first release. CREATE TABLE IF NOT EXISTS leaves existing
         // databases alone, so add them here and ignore "duplicate column".
         for (table, col) in [
@@ -174,6 +206,10 @@ impl Db {
             ("tracks", "duration_ms INTEGER"),
             ("playlists", "date TEXT"),
             ("artists", "folder TEXT"),
+            ("external_files", "album TEXT"),
+            ("external_files", "album_artist TEXT"),
+            ("external_files", "track_no INTEGER"),
+            ("external_files", "year INTEGER"),
         ] {
             if let Err(e) = conn.execute(&format!("ALTER TABLE {table} ADD COLUMN {col}"), [])
                 && !e.to_string().contains("duplicate column")
@@ -303,8 +339,13 @@ impl Db {
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
-    pub fn lyrics_get(&self, track_id: i64) -> Result<Option<LyricsRow>> {
-        Ok(self.0.query_row(&format!("{LYRICS_SELECT} WHERE track_id = ?1"), [track_id], lyrics_row).optional()?)
+    pub fn lyrics_get(&self, key: &str) -> Result<Option<LyricsRow>> {
+        Ok(self.0.query_row(&format!("{LYRICS_SELECT} WHERE key = ?1"), [key], lyrics_row).optional()?)
+    }
+
+    pub fn lyrics_delete(&self, key: &str) -> Result<()> {
+        self.0.execute("DELETE FROM lyrics WHERE key = ?1", [key])?;
+        Ok(())
     }
 
     pub fn lyrics_all(&self) -> Result<Vec<LyricsRow>> {
@@ -315,26 +356,26 @@ impl Db {
 
     pub fn lyrics_set(&self, r: &LyricsRow) -> Result<()> {
         self.0.execute(
-            "INSERT INTO lyrics (track_id, status, source, source_id, synced, plain, sidecar, fetched_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-             ON CONFLICT(track_id) DO UPDATE SET status = excluded.status, source = excluded.source,
-                 source_id = excluded.source_id, synced = excluded.synced, plain = excluded.plain,
+            "INSERT INTO lyrics (key, status, source, source_id, method, delta_ms, synced, plain, sidecar, fetched_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT(key) DO UPDATE SET status = excluded.status, source = excluded.source,
+                 source_id = excluded.source_id, method = excluded.method, delta_ms = excluded.delta_ms,
+                 synced = excluded.synced, plain = excluded.plain,
                  sidecar = COALESCE(excluded.sidecar, lyrics.sidecar), fetched_at = excluded.fetched_at",
-            params![r.track_id, r.status, r.source, r.source_id, r.synced, r.plain, r.sidecar, r.fetched_at],
+            params![
+                r.key,
+                r.status,
+                r.source,
+                r.source_id,
+                r.method,
+                r.delta_ms,
+                r.synced,
+                r.plain,
+                r.sidecar,
+                r.fetched_at
+            ],
         )?;
         Ok(())
-    }
-
-    /// Tracks with a file that have no lyrics row, or a miss older than `retry_before` (Unix
-    /// seconds); with `everything`, every track with a file.
-    pub fn lyrics_candidates(&self, retry_before: i64, everything: bool) -> Result<Vec<Track>> {
-        let sql = format!(
-            "{TRACK_SELECT} LEFT JOIN lyrics l ON l.track_id = t.id
-             WHERE t.path IS NOT NULL AND t.status IN ('ready', 'external')
-               AND (?2 OR l.track_id IS NULL OR (l.status = 'missing' AND l.fetched_at < ?1))
-             ORDER BY t.id"
-        );
-        self.query_tracks(&sql, params![retry_before, everything])
     }
 
     pub fn external_count(&self) -> Result<i64> {
@@ -343,12 +384,13 @@ impl Db {
 
     pub fn upsert_external(&self, e: &ExternalFile) -> Result<()> {
         self.0.execute(
-            "INSERT INTO external_files (path, root, size, mtime, recording_mbid, artist, title, duration_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "INSERT INTO external_files (path, root, size, mtime, recording_mbid, artist, title, duration_ms, album, album_artist, track_no, year)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
              ON CONFLICT(path) DO UPDATE SET root = excluded.root, size = excluded.size, mtime = excluded.mtime,
                  recording_mbid = excluded.recording_mbid, artist = excluded.artist, title = excluded.title,
-                 duration_ms = excluded.duration_ms",
-            params![e.path, e.root, e.size, e.mtime, e.recording_mbid, e.artist, e.title, e.duration_ms],
+                 duration_ms = excluded.duration_ms, album = excluded.album, album_artist = excluded.album_artist,
+                 track_no = excluded.track_no, year = excluded.year",
+            params![e.path, e.root, e.size, e.mtime, e.recording_mbid, e.artist, e.title, e.duration_ms, e.album, e.album_artist, e.track_no, e.year],
         )?;
         Ok(())
     }
