@@ -91,6 +91,7 @@ impl App {
                 | Command::RemotePlaylists
                 | Command::Artists
                 | Command::Artist { folder: None, unpin: false, .. }
+                | Command::Lengths { fix: false, .. }
         );
         let _guard = if read_only { None } else { Some(self.busy.lock().await) };
         if let Err(e) = self.exec(cmd, &tx).await {
@@ -388,6 +389,7 @@ impl App {
                     }
                 }
             }
+            Command::Lengths { track, fix } => self.lengths(track, fix, tx).await,
             Command::Lyrics { action: crate::cli::LyricsCmd::Fetch { track, all, external, force } } => {
                 let sel = crate::lyrics::Selection { all, external_only: external, force, track, limit: None };
                 let report = self.lyrics_fetch(None, sel, tx).await?;

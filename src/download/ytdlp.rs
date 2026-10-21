@@ -7,9 +7,12 @@ use serde_json::Value;
 use super::{Downloaded, Downloader};
 use crate::{config, db::Track};
 
-/// How far a search hit may be from the MusicBrainz length before we'd rather fail than
-/// file a music video intro or a radio edit as the track.
-const MAX_DRIFT_SECS: f64 = 20.0;
+/// How far a file may be from the MusicBrainz length (seconds) before we'd rather fail than
+/// file a music video intro or a radio edit as the track: 10 s, or 5 % of a long song.
+/// `td lengths` flags library files by the same rule.
+pub fn max_drift(want_secs: f64) -> f64 {
+    (want_secs * 0.05).max(10.0)
+}
 const CANDIDATES: usize = 5;
 
 pub struct YtDlp {
@@ -89,7 +92,7 @@ impl YtDlp {
         // Last line of defence: the file itself must be about as long as the recording.
         if let (Some(want), Some(got)) = (track.duration_ms, file_secs(&path)) {
             let want = want as f64 / 1000.0;
-            if (got - want).abs() > MAX_DRIFT_SECS {
+            if (got - want).abs() > max_drift(want) {
                 let _ = std::fs::remove_file(&path);
                 bail!("downloaded {got:.0}s of audio for a {want:.0}s recording");
             }
@@ -142,7 +145,7 @@ fn pick_song<'a>(hits: &'a [Value], want_ms: Option<i64>, title: &str) -> Option
                 (None, _) => 0.0,
                 (Some(_), None) => return None,
             };
-            (drift <= MAX_DRIFT_SECS).then_some((h, drift))
+            (want.is_none_or(|w| drift <= max_drift(w))).then_some((h, drift))
         })
         .min_by(|(a, da), (b, db)| {
             let exact = |h: &Value| norm(h["track"].as_str().or(h["title"].as_str()).unwrap_or("")) == wanted_title;
@@ -153,7 +156,7 @@ fn pick_song<'a>(hits: &'a [Value], want_ms: Option<i64>, title: &str) -> Option
 
 /// Length of a downloaded file, to catch a video cut that slipped through a search without
 /// durations. `None` when the file can't be read; the tagging step will complain then.
-fn file_secs(path: &Path) -> Option<f64> {
+pub fn file_secs(path: &Path) -> Option<f64> {
     use lofty::{file::AudioFile, probe::Probe};
     let f = Probe::open(path).ok()?.options(lofty::config::ParseOptions::new().read_tags(false)).read().ok()?;
     Some(f.properties().duration().as_secs_f64())
@@ -165,7 +168,7 @@ fn pick_closest(hits: &[Value], want_ms: Option<i64>) -> Result<&Value> {
     let best =
         hits.iter().min_by(|a, b| drift(a).unwrap_or(f64::MAX).total_cmp(&drift(b).unwrap_or(f64::MAX))).unwrap();
     match drift(best) {
-        Some(d) if d > MAX_DRIFT_SECS => bail!(
+        Some(d) if d > max_drift(want) => bail!(
             "closest search hit {:?} is {d:.0}s off the {want:.0}s recording; set a URL with `td source`",
             best["title"].as_str().unwrap_or("?")
         ),
@@ -217,6 +220,9 @@ mod tests {
         assert_eq!(pick_closest(&hits, Some(240_000)).unwrap()["id"], "audio");
         assert_eq!(pick_closest(&hits, None).unwrap()["id"], "video", "no length known: trust the search order");
         assert!(pick_closest(&hits, Some(60_000)).unwrap_err().to_string().contains("off the 60s recording"));
+        // A 16 s longer video cut of a 285 s song is past max(10 s, 5 %).
+        assert!(pick_closest(&hits[..1], Some(285_000)).is_err());
+        assert!(pick_closest(&hits[..1], Some(292_000)).is_ok());
     }
 
     #[test]
@@ -229,7 +235,10 @@ mod tests {
         ];
         assert_eq!(pick_song(&hits, Some(249_000), "Apricots").unwrap()["id"], "song");
         assert_eq!(pick_song(&hits, Some(249_000), "Apricots (Live at Glastonbury)").unwrap()["id"], "live");
-        assert!(pick_song(&hits, Some(120_000), "Apricots").is_none(), "nothing within 20 s: let the fallback try");
+        assert!(
+            pick_song(&hits, Some(120_000), "Apricots").is_none(),
+            "nothing within the drift limit: let the fallback try"
+        );
         assert_eq!(pick_song(&hits, None, "Apricots").unwrap()["id"], "song", "no length: the exact title wins");
     }
 }

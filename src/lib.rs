@@ -6,6 +6,7 @@ pub mod daemon;
 pub mod db;
 pub mod download;
 pub mod external;
+pub mod lengths;
 pub mod library;
 pub mod listenbrainz;
 pub mod lyrics;

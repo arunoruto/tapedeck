@@ -24,6 +24,7 @@ const COLUMNS: &[&str] = &[
     "smart",
     "synced",
     "fetched_at",
+    "note",
     "path",
 ];
 

@@ -220,6 +220,8 @@ fn rank_search_hits<'a>(v: &'a Value, artist: &str, title: &str, length_ms: Opti
     let mut hits: Vec<&Value> = all
         .iter()
         .filter(|r| r["score"].as_i64().unwrap_or(0) >= 80)
+        // Music-video recordings carry the intro and outro; never the track.
+        .filter(|r| r["video"].as_bool() != Some(true))
         // Covers match the search too (the work links back to the original); keep the artist's own.
         .filter(|r| wanted.is_empty() || credit(&r["artist-credit"]).0.to_lowercase().contains(&wanted))
         .filter(|r| version_words(r["title"].as_str().unwrap_or("")).iter().all(|w| allowed.contains(w)))

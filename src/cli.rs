@@ -133,6 +133,16 @@ pub enum Command {
         #[arg(long)]
         video: bool,
     },
+    /// Own files whose length is off their MusicBrainz recording: music-video cuts, truncated
+    /// downloads, other versions. Silence padding, a better-fitting recording (relink with
+    /// `td retag`) and external copies are told apart. Dry run; --fix downloads the broken,
+    /// longer and shorter ones again and keeps the old files under <library>/.tapedeck-backup.
+    Lengths {
+        /// Only this track.
+        track: Option<i64>,
+        #[arg(long)]
+        fix: bool,
+    },
     /// Lyrics from LRCLIB: .lrc/.txt next to the files for Plex, in the database for Subsonic.
     Lyrics {
         #[command(subcommand)]
