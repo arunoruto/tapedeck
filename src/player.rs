@@ -125,6 +125,11 @@ impl Player {
         self.cmd(vec![json!("seek"), json!(secs), json!("relative")]).map(drop)
     }
 
+    /// Seek to `secs` into the track; a negative value counts back from its end.
+    pub fn seek_to(&mut self, secs: f64) -> Result<()> {
+        self.cmd(vec![json!("seek"), json!(secs), json!("absolute")]).map(drop)
+    }
+
     pub fn volume(&mut self, delta: i64) -> Result<()> {
         self.volume = (self.volume + delta).clamp(0, 130);
         self.cmd(vec![json!("set_property"), json!("volume"), json!(self.volume)]).map(drop)

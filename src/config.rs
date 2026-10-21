@@ -64,7 +64,8 @@ pub struct Server {
     pub token: Option<String>,
     pub token_file: Option<PathBuf>,
     /// What a client without the token may do: "read" (status, search, listings), "stream"
-    /// (the audio), "listen" (scrobbles), plus optionally "request" and "sync".
+    /// (the audio), "listen" (scrobbles), plus optionally "request", "sync" and "review"
+    /// (flagging `td lengths` findings).
     #[serde(default = "default_anonymous")]
     pub anonymous: Vec<String>,
     /// Sign-in for Subsonic clients on `/rest/`.
@@ -418,8 +419,8 @@ impl Config {
         let cfg: Config = table.try_into().context("parsing config")?;
         crate::library::validate_template(&cfg.path_template)?;
         for scope in &cfg.server.anonymous {
-            if !matches!(scope.as_str(), "read" | "stream" | "listen" | "request" | "sync") {
-                bail!("[server] anonymous: unknown scope {scope:?} (read, stream, listen, request, sync)");
+            if !matches!(scope.as_str(), "read" | "stream" | "listen" | "request" | "sync" | "review") {
+                bail!("[server] anonymous: unknown scope {scope:?} (read, stream, listen, request, sync, review)");
             }
         }
         let sub = &cfg.server.subsonic;

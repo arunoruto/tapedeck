@@ -51,6 +51,41 @@ fn lyrics_row(r: &Row) -> rusqlite::Result<LyricsRow> {
 const LYRICS_SELECT: &str =
     "SELECT key, status, source, source_id, method, delta_ms, synced, plain, sidecar, fetched_at FROM lyrics";
 
+/// One row of `lengths`: a file `td lengths` found off, and the verdict on it.
+#[derive(Serialize, Clone, Debug, Default)]
+pub struct LengthRow {
+    pub track_id: i64,
+    pub kind: String,
+    pub mb_ms: i64,
+    pub file_ms: i64,
+    pub note: Option<String>,
+    pub relink: Option<String>,
+    pub size: Option<i64>,
+    pub mtime: Option<i64>,
+    pub verdict: Option<String>,
+    pub decided_at: Option<i64>,
+    pub checked_at: i64,
+}
+
+fn length_row(r: &Row) -> rusqlite::Result<LengthRow> {
+    Ok(LengthRow {
+        track_id: r.get(0)?,
+        kind: r.get(1)?,
+        mb_ms: r.get(2)?,
+        file_ms: r.get(3)?,
+        note: r.get(4)?,
+        relink: r.get(5)?,
+        size: r.get(6)?,
+        mtime: r.get(7)?,
+        verdict: r.get(8)?,
+        decided_at: r.get(9)?,
+        checked_at: r.get(10)?,
+    })
+}
+
+const LENGTH_SELECT: &str =
+    "SELECT track_id, kind, mb_ms, file_ms, note, relink, size, mtime, verdict, decided_at, checked_at FROM lengths";
+
 #[derive(Serialize, Clone, Debug)]
 pub struct ExternalFile {
     pub path: String,
@@ -345,6 +380,42 @@ impl Db {
 
     pub fn lyrics_delete(&self, key: &str) -> Result<()> {
         self.0.execute("DELETE FROM lyrics WHERE key = ?1", [key])?;
+        Ok(())
+    }
+
+    pub fn length_get(&self, track_id: i64) -> Result<Option<LengthRow>> {
+        Ok(self.0.query_row(&format!("{LENGTH_SELECT} WHERE track_id = ?1"), [track_id], length_row).optional()?)
+    }
+
+    pub fn lengths_all(&self) -> Result<Vec<LengthRow>> {
+        let mut st = self.0.prepare(LENGTH_SELECT)?;
+        let rows = st.query_map([], length_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    /// Store a fresh finding; it starts undecided.
+    pub fn length_set(&self, r: &LengthRow) -> Result<()> {
+        self.0.execute(
+            "INSERT OR REPLACE INTO lengths (track_id, kind, mb_ms, file_ms, note, relink, size, mtime, verdict, decided_at, checked_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            params![r.track_id, r.kind, r.mb_ms, r.file_ms, r.note, r.relink, r.size, r.mtime, r.verdict, r.decided_at, r.checked_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn length_mark(&self, track_id: i64, verdict: Option<&str>) -> Result<()> {
+        let at = verdict.map(|_| {
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+        });
+        self.0.execute(
+            "UPDATE lengths SET verdict = ?2, decided_at = ?3 WHERE track_id = ?1",
+            params![track_id, verdict, at],
+        )?;
+        Ok(())
+    }
+
+    pub fn length_delete(&self, track_id: i64) -> Result<()> {
+        self.0.execute("DELETE FROM lengths WHERE track_id = ?1", [track_id])?;
         Ok(())
     }
 

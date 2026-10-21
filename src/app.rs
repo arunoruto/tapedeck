@@ -91,7 +91,7 @@ impl App {
                 | Command::RemotePlaylists
                 | Command::Artists
                 | Command::Artist { folder: None, unpin: false, .. }
-                | Command::Lengths { fix: false, .. }
+                | Command::Lengths(crate::cli::LengthsArgs { fix: false, .. })
         );
         let _guard = if read_only { None } else { Some(self.busy.lock().await) };
         if let Err(e) = self.exec(cmd, &tx).await {
@@ -306,42 +306,7 @@ impl App {
                 ensure!(self.db().set_source_url(track, &url)?, "no track with id {track}");
                 info(tx, format!("track {track} queued for download from {url}")).await
             }
-            Command::Retag { track, recording } => {
-                let cfg = &self.config;
-                let t = self.db().track_by_id(track)?.with_context(|| format!("no track with id {track}"))?;
-                ensure!(
-                    !is_external(&t),
-                    "track {track} is a file in an external library; tapedeck doesn't retag those"
-                );
-                let mbid = recording.trim().to_lowercase();
-                ensure!(library::is_uuid(&mbid), "{recording:?} is not a MusicBrainz id");
-                if let Some(other) = self.db().track_by_mbid(&mbid)?
-                    && other.id != track
-                {
-                    bail!("track {} ({} - {}) already is that recording", other.id, other.artist, other.title);
-                }
-                let r = self.mb.recording(&mbid).await?;
-                self.db().set_recording(track, &mbid)?;
-                self.db().insert_track(&new_track(&mbid, &r))?;
-                let fresh = self.db().track_by_id(track)?.context("track vanished")?;
-                if let Some(old_rel) = &t.path {
-                    let ext = Path::new(old_rel).extension().and_then(|e| e.to_str()).unwrap_or("bin");
-                    let new_rel = library::render_template(&cfg.path_template, &fresh, ext)?;
-                    if new_rel != Path::new(old_rel) {
-                        let new_rel = library::unique(&cfg.library, &new_rel);
-                        library::move_track(&cfg.library, Path::new(old_rel), &new_rel)?;
-                        self.db().set_path(track, &new_rel.to_string_lossy())?;
-                        info(tx, format!("moved {old_rel} → {}", new_rel.display())).await?;
-                        let moves = HashMap::from([(cfg.library.join(old_rel), cfg.library.join(&new_rel))]);
-                        self.follow_moves(&moves, tx).await?;
-                    }
-                    let fresh = self.db().track_by_id(track)?.context("track vanished")?;
-                    library::tag(&cfg.library.join(fresh.path.as_deref().unwrap_or(old_rel)), &fresh)?;
-                }
-                let playlists = self.db().playlists_with_track(track)?;
-                self.rewrite_m3us(Some(&playlists))?;
-                info(tx, format!("track {track} is now {} - {} [{}]", r.artist, r.title, r.album)).await
-            }
+            Command::Retag { track, recording } => self.retag(track, recording, tx).await,
             Command::Refile { dry_run } => self.refile(dry_run, tx).await,
             Command::Remote { action } => self.remote(action, tx).await,
             Command::Request { input, pick, video } => {
@@ -389,7 +354,7 @@ impl App {
                     }
                 }
             }
-            Command::Lengths { track, fix } => self.lengths(track, fix, tx).await,
+            Command::Lengths(args) => self.lengths(args, tx).await,
             Command::Lyrics { action: crate::cli::LyricsCmd::Fetch { track, all, external, force } } => {
                 let sel = crate::lyrics::Selection { all, external_only: external, force, track, limit: None };
                 let report = self.lyrics_fetch(None, sel, tx).await?;
@@ -1295,6 +1260,41 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    /// Make track `track` recording `recording`: refetch, retag, move if the path changes.
+    pub(crate) async fn retag(&self, track: i64, recording: String, tx: &Sender<Event>) -> Result<()> {
+        let cfg = &self.config;
+        let t = self.db().track_by_id(track)?.with_context(|| format!("no track with id {track}"))?;
+        ensure!(!is_external(&t), "track {track} is a file in an external library; tapedeck doesn't retag those");
+        let mbid = recording.trim().to_lowercase();
+        ensure!(library::is_uuid(&mbid), "{recording:?} is not a MusicBrainz id");
+        if let Some(other) = self.db().track_by_mbid(&mbid)?
+            && other.id != track
+        {
+            bail!("track {} ({} - {}) already is that recording", other.id, other.artist, other.title);
+        }
+        let r = self.mb.recording(&mbid).await?;
+        self.db().set_recording(track, &mbid)?;
+        self.db().insert_track(&new_track(&mbid, &r))?;
+        let fresh = self.db().track_by_id(track)?.context("track vanished")?;
+        if let Some(old_rel) = &t.path {
+            let ext = Path::new(old_rel).extension().and_then(|e| e.to_str()).unwrap_or("bin");
+            let new_rel = library::render_template(&cfg.path_template, &fresh, ext)?;
+            if new_rel != Path::new(old_rel) {
+                let new_rel = library::unique(&cfg.library, &new_rel);
+                library::move_track(&cfg.library, Path::new(old_rel), &new_rel)?;
+                self.db().set_path(track, &new_rel.to_string_lossy())?;
+                info(tx, format!("moved {old_rel} → {}", new_rel.display())).await?;
+                let moves = HashMap::from([(cfg.library.join(old_rel), cfg.library.join(&new_rel))]);
+                self.follow_moves(&moves, tx).await?;
+            }
+            let fresh = self.db().track_by_id(track)?.context("track vanished")?;
+            library::tag(&cfg.library.join(fresh.path.as_deref().unwrap_or(old_rel)), &fresh)?;
+        }
+        let playlists = self.db().playlists_with_track(track)?;
+        self.rewrite_m3us(Some(&playlists))?;
+        info(tx, format!("track {track} is now {} - {} [{}]", r.artist, r.title, r.album)).await
     }
 
     /// Point playlist backups at files that just moved, whoever moved them.

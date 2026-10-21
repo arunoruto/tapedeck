@@ -134,15 +134,11 @@ pub enum Command {
         video: bool,
     },
     /// Own files whose length is off their MusicBrainz recording: music-video cuts, truncated
-    /// downloads, other versions. Silence padding, a better-fitting recording (relink with
-    /// `td retag`) and external copies are told apart. Dry run; --fix downloads the broken,
-    /// longer and shorter ones again and keeps the old files under <library>/.tapedeck-backup.
-    Lengths {
-        /// Only this track.
-        track: Option<i64>,
-        #[arg(long)]
-        fix: bool,
-    },
+    /// downloads, other versions; padding, a better-fitting recording, a real release (Deezer)
+    /// and external copies are told apart. The audit is stored for review: listen, then
+    /// --mark good|bad|relink (or the TUI's Review tab); --fix acts on bad and relink only, and
+    /// keeps replaced files under <library>/.tapedeck-backup.
+    Lengths(LengthsArgs),
     /// Lyrics from LRCLIB: .lrc/.txt next to the files for Plex, in the database for Subsonic.
     Lyrics {
         #[command(subcommand)]
@@ -183,6 +179,26 @@ pub enum Command {
         #[arg(long, requires = "move")]
         delete_duplicates: bool,
     },
+}
+
+#[derive(clap::Args, Serialize, Deserialize, Debug, Clone, Default)]
+pub struct LengthsArgs {
+    /// Only this track.
+    pub track: Option<i64>,
+    /// Fix what is flagged: re-download "bad" files, retag "relink" ones.
+    #[arg(long, conflicts_with_all = ["mark", "list"])]
+    #[serde(default)]
+    pub fix: bool,
+    /// Judge TRACK: good, bad, relink (to the suggested recording) or none.
+    #[arg(long, requires = "track", conflicts_with = "list")]
+    pub mark: Option<String>,
+    /// Show the stored audit without checking the files again.
+    #[arg(long)]
+    #[serde(default)]
+    pub list: bool,
+    /// Only rows with this verdict (good, bad, relink, none); good ones are hidden otherwise.
+    #[arg(long)]
+    pub verdict: Option<String>,
 }
 
 #[derive(Subcommand, Serialize, Deserialize, Debug, Clone)]

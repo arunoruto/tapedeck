@@ -28,7 +28,8 @@ external files alike).
 
 Two levels of access. Without a token a client gets the `anonymous` scopes: `read` (status,
 search, the listings the TUI shows), `stream` (the audio), `listen` (scrobbles); `request`
-(`td request`) and `sync` can be added to the list. Everything else (delete, retag, push,
+(`td request`), `sync` and `review` (flagging `td lengths` findings good/bad/relink, as the
+TUI's Review tab does; fixing them stays admin) can be added to the list. Everything else (delete, retag, push,
 unpush, import, refile, remote rm, external dedupe, …) needs the admin token and answers
 `403` with a plain message otherwise; the TUI shows it in its status line. A server with no
 token configured simply has no admin access over HTTP; `td` on the server itself, through the

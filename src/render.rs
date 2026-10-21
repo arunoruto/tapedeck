@@ -10,6 +10,7 @@ const COLUMNS: &[&str] = &[
     "kind",
     "date",
     "status",
+    "verdict",
     "artist",
     "title",
     "album",

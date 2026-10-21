@@ -35,7 +35,8 @@ struct Shared {
 #[derive(Clone, Copy)]
 struct Admin(bool);
 
-/// What a command needs: "read", "stream", "listen", "request", "sync", or "admin" (everything else).
+/// What a command needs: "read", "stream", "listen", "request", "sync", "review", or "admin"
+/// (everything else).
 pub fn scope_of(cmd: &Command) -> &'static str {
     match cmd {
         Command::Status
@@ -47,6 +48,8 @@ pub fn scope_of(cmd: &Command) -> &'static str {
         | Command::Artists
         | Command::Artist { folder: None, unpin: false, .. }
         | Command::Lyrics { action: crate::cli::LyricsCmd::Show { .. } | crate::cli::LyricsCmd::Status } => "read",
+        Command::Lengths(a) if a.list && a.mark.is_none() && !a.fix => "read",
+        Command::Lengths(a) if a.mark.is_some() => "review",
         Command::Listen { .. } => "listen",
         Command::Request { .. } => "request",
         Command::Sync { .. } => "sync",

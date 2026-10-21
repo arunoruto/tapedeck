@@ -1,7 +1,8 @@
 # The TUI
 
 Plain `td` opens it. Left to right: artists, albums, songs; `]` switches to the playlists,
-local and remote. Every action asks before it touches anything.
+local and remote, and once more to the length review. Every action asks before it touches
+anything.
 
 <p align="center"><img src="https://raw.githubusercontent.com/arunoruto/tapedeck/main/assets/tui.gif" alt="td browsing the library and the playlists" width="900"></p>
 
@@ -9,7 +10,7 @@ local and remote. Every action asks before it touches anything.
 
 | Key | Does |
 |---|---|
-| `Tab`, `[`, `]`, `1`, `2` | Switch tabs |
+| `Tab`, `[`, `]`, `1`, `2`, `3` | Switch tabs |
 | `h j k l`, arrows | Move between panes and rows; `Enter` or `l` drills into the next column |
 | `^D` `^U`, `^F` `^B`, `g` `G` | Half page, page, ends |
 | `/` | Filter by artist, title or album; `^U` wipes it while typing |
@@ -46,6 +47,25 @@ mode never needs the token; the `listen` scope covers it. Listens that cannot be
 (offline, ListenBrainz down) are queued in the database and sent on the next play or daemon
 start. Without a token on the daemon nothing is sent and nothing is queued.
 
+## Review
+
+The third tab lists what `td lengths` found: files that are not as long as their MusicBrainz
+recording, worst first, with what tapedeck thinks they are (padded, metadata, release, broken,
+longer, shorter) and the reference it found. It is for judging by ear before anything is
+replaced:
+
+| Key | Does |
+|---|---|
+| `Enter` | Play from the selected row on |
+| `e` | Jump to 5 s before where the recording should end: music or a skit going on means a video cut |
+| `E` | Jump to the last 30 s: cut off, or a proper ending? |
+| `g` `b` `r` `u` | Good, bad, relink (to the recording in the note), undecided; each moves on, and plays the next one if something was playing |
+| `F` | Fix what is flagged: bad files are downloaded again (old ones kept in `.tapedeck-backup/`), relink ones retagged |
+| `L` | Check every file again; verdicts are kept while a file stays the same |
+| `/` | Filter, e.g. `longer`, `bad`, `undecided` or an artist |
+
+Good files stay out of `td lengths` from then on. In remote mode flagging needs the `review`
+scope (or the token) and fixing needs the token.
 
 ## Themes
 

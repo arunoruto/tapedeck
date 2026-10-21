@@ -101,6 +101,22 @@ CREATE TABLE IF NOT EXISTS listens (
     attempts    INTEGER NOT NULL DEFAULT 0
 );
 
+-- `td lengths`: own files whose length is off their recording, and what someone who listened
+-- decided (good | bad | relink). A verdict holds while size and mtime stay the same.
+CREATE TABLE IF NOT EXISTS lengths (
+    track_id   INTEGER PRIMARY KEY REFERENCES tracks(id) ON DELETE CASCADE,
+    kind       TEXT NOT NULL,                              -- padded | external | metadata | release | broken | longer | shorter | unreadable
+    mb_ms      INTEGER NOT NULL,
+    file_ms    INTEGER NOT NULL,
+    note       TEXT,
+    relink     TEXT,                                       -- recording MBID that fits the file
+    size       INTEGER,
+    mtime      INTEGER,
+    verdict    TEXT,
+    decided_at INTEGER,
+    checked_at INTEGER NOT NULL
+);
+
 -- Lyrics per track: what LRCLIB (or a sidecar already on disk) said. `sidecar` is the
 -- extension of the file tapedeck wrote next to the audio (lrc/txt), if any; a miss is retried
 -- after [lyrics] retry_after.

@@ -1,5 +1,5 @@
-//! `td tui` (and plain `td`): browse the library as artist › album › song, and the playlists
-//! next to their tracks. Browsing reads the database directly; actions run the same `Command`s
+//! `td tui` (and plain `td`): browse the library as artist › album › song, the playlists
+//! next to their tracks, and the `td lengths` findings to listen to and judge. Browsing reads the database directly; actions run the same `Command`s
 //! the CLI has, through the daemon when it is up, else in-process, and every destructive one
 //! asks first.
 
@@ -23,7 +23,7 @@ use serde::de::DeserializeOwned;
 use crate::{
     Event as TdEvent, api,
     app::remote_title,
-    cli::{Command, RemoteCmd},
+    cli::{Command, LengthsArgs, RemoteCmd},
     config::Config,
     daemon,
     db::{Playlist, Track},
@@ -38,9 +38,24 @@ use crate::{
 enum Tab {
     Library = 0,
     Playlists = 1,
+    Review = 2,
 }
 
-const TABS: [&str; 2] = ["Library", "Playlists"];
+const TABS: [&str; 3] = ["Library", "Playlists", "Review"];
+const TAB_ORDER: [Tab; 3] = [Tab::Library, Tab::Playlists, Tab::Review];
+
+/// One `td lengths --list` row: a file whose length is off, and the verdict on it.
+#[derive(serde::Deserialize, Clone)]
+struct Review {
+    id: i64,
+    verdict: Option<String>,
+    kind: String,
+    artist: String,
+    title: String,
+    length: String,
+    note: Option<String>,
+    mb_ms: i64,
+}
 const SPINNER: [char; 4] = ['|', '/', '-', '\\'];
 
 /// What the playlists tab's left pane can point at.
@@ -118,6 +133,9 @@ struct Tui {
     left: ListState,
     tracks: Vec<Track>,
     right: TableState,
+    /// Review tab.
+    review: Vec<Review>,
+    review_at: TableState,
 }
 
 /// The library tab's columns for one artist/album selection and filter.
@@ -154,6 +172,8 @@ pub async fn run(config: Config) -> Result<()> {
         left: ListState::default().with_selected(Some(0)),
         tracks: vec![],
         right: TableState::default().with_selected(Some(0)),
+        review: vec![],
+        review_at: TableState::default().with_selected(Some(0)),
     };
     // Every load goes through the same command path as the CLI: a local database, the local
     // daemon's socket, or a remote daemon's API, whichever the config says. They run on the
@@ -187,6 +207,25 @@ struct RemoteRow {
     title: String,
     tracks: i64,
     smart: bool,
+}
+
+/// Run a command for its effect; the first error comes back.
+async fn send(cfg: &Config, cmd: Command) -> Result<()> {
+    let (tx, mut rx) = mpsc::channel::<TdEvent>(64);
+    let cfg2 = cfg.clone();
+    let worker = tokio::spawn(async move { daemon::dispatch(&cfg2, cmd, tx).await });
+    let mut err = None;
+    while let Some(ev) = rx.recv().await {
+        if let TdEvent::Error { msg } = ev {
+            err.get_or_insert(msg);
+        }
+    }
+    worker.await??;
+    err.map_or(Ok(()), |m| Err(anyhow::anyhow!("{m}")))
+}
+
+fn lengths(args: LengthsArgs) -> Command {
+    Command::Lengths(args)
 }
 
 /// Run a command and return its single `data` payload, deserialised.
@@ -257,6 +296,10 @@ impl Tui {
             })
             .collect();
         self.entries.extend(remote.into_iter().map(|(target, playlist)| Entry::Remote { target, playlist }));
+        // The audit is optional reading: an older daemon or a refused scope just leaves it empty.
+        self.review = self
+            .load(lengths(LengthsArgs { list: true, verdict: Some("all".into()), ..Default::default() }))
+            .unwrap_or_default();
         self.select_left(self.left.selected().unwrap_or(0).min(self.entries.len().saturating_sub(1)))
     }
 
@@ -296,7 +339,82 @@ impl Tui {
         match self.tab {
             Tab::Library => self.shelf().songs.get(self.songs.selected()?).copied(),
             Tab::Playlists => self.visible().get(self.right.selected()?).copied(),
+            Tab::Review => {
+                let id = self.visible_review().get(self.review_at.selected()?)?.id;
+                self.all.iter().find(|t| t.id == id)
+            }
         }
+    }
+
+    /// Review rows matching the filter (kind, verdict, artist or title).
+    fn visible_review(&self) -> Vec<&Review> {
+        let q = self.query.to_lowercase();
+        self.review
+            .iter()
+            .filter(|r| {
+                q.is_empty()
+                    || r.kind.contains(&q)
+                    || r.verdict.as_deref().unwrap_or("undecided").contains(&q)
+                    || r.artist.to_lowercase().contains(&q)
+                    || r.title.to_lowercase().contains(&q)
+            })
+            .collect()
+    }
+
+    /// Judge the selected review row, then move on; if something was playing, the next one plays.
+    fn mark(&mut self, verdict: &str) {
+        let Some(r) = self.visible_review().get(self.review_at.selected().unwrap_or(0)).map(|r| (*r).clone()) else {
+            self.status = "nothing to judge".into();
+            return;
+        };
+        let cmd = lengths(LengthsArgs { track: Some(r.id), mark: Some(verdict.into()), ..Default::default() });
+        if let Err(e) = self.rt.block_on(send(&self.config, cmd)) {
+            self.status = format!("{e:#}");
+            return;
+        }
+        let v = (verdict != "none").then(|| verdict.to_string());
+        if let Some(row) = self.review.iter_mut().find(|x| x.id == r.id) {
+            row.verdict = v;
+        }
+        self.status = format!("{} - {}: {}", r.artist, r.title, if verdict == "none" { "undecided" } else { verdict });
+        let _ = self.step(1);
+        if self.player.is_some() && !self.now.idle {
+            self.play_from_selection();
+        }
+    }
+
+    /// Review-tab keys; `true` when the key was one of them.
+    fn review_key(&mut self, code: KeyCode) -> bool {
+        let row = self.visible_review().get(self.review_at.selected().unwrap_or(0)).map(|r| (*r).clone());
+        match code {
+            KeyCode::Char('g') => self.mark("good"),
+            KeyCode::Char('b') => self.mark("bad"),
+            KeyCode::Char('r') => self.mark("relink"),
+            KeyCode::Char('u') => self.mark("none"),
+            // Just before where the recording should end: music or a skit going on means a video cut.
+            KeyCode::Char('e') => match row {
+                Some(r) => self.player_do(|p| p.seek_to((r.mb_ms as f64 / 1000.0 - 5.0).max(0.0))),
+                None => self.status = "nothing selected".into(),
+            },
+            KeyCode::Char('E') => self.player_do(|p| p.seek_to(-30.0)),
+            KeyCode::Char('F') => {
+                let n = self.review.iter().filter(|r| matches!(r.verdict.as_deref(), Some("bad" | "relink"))).count();
+                self.mode = Mode::Confirm {
+                    msg: format!(
+                        "Fix {n} flagged files? Bad ones are downloaded again (old files kept in .tapedeck-backup), relink ones retagged."
+                    ),
+                    then: Pending::Run(vec![lengths(LengthsArgs { fix: true, ..Default::default() })]),
+                };
+            }
+            KeyCode::Char('L') => {
+                self.mode = Mode::Confirm {
+                    msg: "Check every file's length again? Takes a few minutes; verdicts are kept.".into(),
+                    then: Pending::Run(vec![lengths(LengthsArgs::default())]),
+                };
+            }
+            _ => return false,
+        }
+        true
     }
 
     fn selected_entry(&self) -> Option<&Entry> {
@@ -307,6 +425,7 @@ impl Tui {
         match self.tab {
             Tab::Library => 3,
             Tab::Playlists => 2,
+            Tab::Review => 1,
         }
     }
 
@@ -321,6 +440,7 @@ impl Tui {
         }
         self.songs.select(Some(0));
         self.right.select(Some(0));
+        self.review_at.select(Some(0));
     }
 
     /// Run commands one after another on the runtime; events land in the log as they arrive.
@@ -471,13 +591,12 @@ impl Tui {
             KeyCode::Char('q') | KeyCode::Esc => return Ok(true),
             KeyCode::Char('c') if ctrl => return Ok(true),
             KeyCode::Char('/') => self.mode = Mode::Search,
-            KeyCode::Tab | KeyCode::Char(']') | KeyCode::Char('2') if self.tab == Tab::Library => {
-                self.set_tab(Tab::Playlists)
+            _ if self.tab == Tab::Review && self.review_key(code) => {}
+            KeyCode::Tab | KeyCode::Char(']') => self.set_tab(TAB_ORDER[(self.tab as usize + 1) % TAB_ORDER.len()]),
+            KeyCode::BackTab | KeyCode::Char('[') => {
+                self.set_tab(TAB_ORDER[(self.tab as usize + TAB_ORDER.len() - 1) % TAB_ORDER.len()])
             }
-            KeyCode::Tab | KeyCode::BackTab | KeyCode::Char('[') | KeyCode::Char('1') if self.tab == Tab::Playlists => {
-                self.set_tab(Tab::Library)
-            }
-            KeyCode::BackTab | KeyCode::Char('[') => self.set_tab(Tab::Playlists),
+            KeyCode::Char(c @ '1'..='3') => self.set_tab(TAB_ORDER[c as usize - '1' as usize]),
             // Enter on the last pane (a track) opens its details.
             KeyCode::Char('i') => {
                 if let Some(rows) = self.selected_track().map(|t| track_info(&self.config, t)) {
@@ -613,6 +732,11 @@ impl Tui {
                 let from = self.right.selected().unwrap_or(0);
                 self.visible().into_iter().skip(from).cloned().collect()
             }
+            Tab::Review => {
+                let from = self.review_at.selected().unwrap_or(0);
+                let ids: Vec<i64> = self.visible_review().iter().skip(from).map(|r| r.id).collect();
+                ids.iter().filter_map(|id| self.all.iter().find(|t| t.id == *id).cloned()).collect()
+            }
         };
         let items: Vec<(i64, String, String)> = list
             .iter()
@@ -740,6 +864,7 @@ impl Tui {
             (Tab::Library, _) => (self.shelf().songs.len(), self.songs.selected()),
             (Tab::Playlists, 0) => (self.entries.len(), self.left.selected()),
             (Tab::Playlists, _) => (self.visible().len(), self.right.selected()),
+            (Tab::Review, _) => (self.visible_review().len(), self.review_at.selected()),
         };
         if len == 0 {
             return Ok(());
@@ -758,6 +883,7 @@ impl Tui {
             (Tab::Library, _) => self.songs.select(Some(next)),
             (Tab::Playlists, 0) => self.select_left(next)?,
             (Tab::Playlists, _) => self.right.select(Some(next)),
+            (Tab::Review, _) => self.review_at.select(Some(next)),
         }
         Ok(())
     }
@@ -784,6 +910,7 @@ impl Tui {
                 self.draw_playlists(f, left);
                 self.draw_playlist_tracks(f, right);
             }
+            Tab::Review => self.draw_review(f, body),
         }
         self.draw_detail(f, detail);
         let key = |k: &str| Span::styled(k.to_string(), Style::new().fg(th.accent).bold());
@@ -821,27 +948,41 @@ impl Tui {
                 if !self.status.is_empty() {
                     spans.push(Span::styled(format!("{}  ", self.status), Style::new().fg(th.warning)));
                 }
-                for (i, (k, what)) in [
+                let review_keys = [
                     ("Tab/[]", "tabs"),
-                    ("hjkl", "move"),
-                    ("^D/^U", "half page"),
-                    ("/", "filter"),
                     ("Enter", "play"),
-                    ("space", "pause"),
-                    ("n/N", "next/prev"),
-                    ("i", "info"),
-                    ("S", "sync"),
-                    ("R", "re-download"),
-                    ("s", "source"),
-                    ("m", "match"),
-                    ("p", "push"),
-                    ("u", "unpush"),
-                    ("d", "delete"),
+                    ("e", "where it should end"),
+                    ("E", "last 30 s"),
+                    (",/.", "∓10 s"),
+                    ("g/b/r/u", "good/bad/relink/undecided"),
+                    ("F", "fix flagged"),
+                    ("L", "check again"),
+                    ("/", "filter"),
                     ("q", "quit"),
-                ]
-                .into_iter()
-                .enumerate()
-                {
+                ];
+                let keys: &[(&str, &str)] = if self.tab == Tab::Review {
+                    &review_keys
+                } else {
+                    &[
+                        ("Tab/[]", "tabs"),
+                        ("hjkl", "move"),
+                        ("^D/^U", "half page"),
+                        ("/", "filter"),
+                        ("Enter", "play"),
+                        ("space", "pause"),
+                        ("n/N", "next/prev"),
+                        ("i", "info"),
+                        ("S", "sync"),
+                        ("R", "re-download"),
+                        ("s", "source"),
+                        ("m", "match"),
+                        ("p", "push"),
+                        ("u", "unpush"),
+                        ("d", "delete"),
+                        ("q", "quit"),
+                    ]
+                };
+                for (i, (k, what)) in keys.iter().enumerate() {
                     if i > 0 {
                         spans.push(dim(" · "));
                     }
@@ -1076,6 +1217,54 @@ impl Tui {
         .header(self.header(["STATUS", "ARTIST", "TITLE", "ALBUM", "YEAR", "LEN"]))
         .block(self.pane(" Tracks ", self.pane == 1));
         f.render_stateful_widget(table, area, &mut self.right);
+    }
+
+    fn draw_review(&mut self, f: &mut Frame, area: Rect) {
+        let th = self.theme.clone();
+        let selected = self.review_at.selected();
+        let highlight = Style::new().bg(th.selection_bg).fg(th.selection_fg).bold();
+        let rows: Vec<Row> = self
+            .visible_review()
+            .into_iter()
+            .enumerate()
+            .map(|(i, r)| {
+                let (verdict, colour) = match r.verdict.as_deref() {
+                    Some("good") => ("good", th.ready),
+                    Some("bad") => ("bad", th.failed),
+                    Some("relink") => ("relink", th.accent),
+                    _ => ("·", th.muted),
+                };
+                let row = Row::new(vec![
+                    Cell::from(Span::styled(verdict, Style::new().fg(colour).bold())),
+                    Cell::from(Span::styled(r.kind.clone(), Style::new().fg(th.title))),
+                    Cell::from(r.artist.clone()),
+                    Cell::from(r.title.clone()),
+                    Cell::from(r.length.clone()),
+                    Cell::from(Span::styled(r.note.clone().unwrap_or_default(), Style::new().fg(th.muted))),
+                ]);
+                if Some(i) == selected { row.style(highlight) } else { row }
+            })
+            .collect();
+        let open = self.review.iter().filter(|r| r.verdict.is_none()).count();
+        let title = if self.review.is_empty() {
+            " Review: nothing yet, L checks every file's length ".to_string()
+        } else {
+            format!(" Review ({} · {open} undecided) ", self.review.len())
+        };
+        let table = Table::new(
+            rows,
+            [
+                Constraint::Length(6),
+                Constraint::Length(10),
+                Constraint::Percentage(20),
+                Constraint::Percentage(25),
+                Constraint::Length(22),
+                Constraint::Min(10),
+            ],
+        )
+        .header(self.header(["", "KIND", "ARTIST", "TITLE", "LENGTH", "NOTE"]))
+        .block(self.pane(&title, true));
+        f.render_stateful_widget(table, area, &mut self.review_at);
     }
 
     /// Selected track on the first line, the last two log lines below it.
