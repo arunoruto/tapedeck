@@ -60,6 +60,15 @@ impl MusicBrainz {
         parse_recording(&v, mbid)
     }
 
+    /// Recordings carrying an ISRC, as (MBID, length in ms).
+    pub async fn isrc(&self, isrc: &str) -> Result<Vec<(String, Option<i64>)>> {
+        let v = self.get(&format!("{API}/isrc/{isrc}?fmt=json"), &format!("isrc {isrc}")).await?;
+        Ok(v["recordings"]
+            .as_array()
+            .map(|rs| rs.iter().filter_map(|r| Some((r["id"].as_str()?.to_string(), r["length"].as_i64()))).collect())
+            .unwrap_or_default())
+    }
+
     /// Best recording MBID for an untagged file: search by artist and title, then prefer the
     /// hit whose length matches the file. None if nothing scores well enough.
     /// Lucene ties most hits at 100 in no stable order, so we ask for the maximum and let

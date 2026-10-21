@@ -14,7 +14,7 @@
 | `td source ID URL` | Pin the download URL for one track and queue it |
 | `td retag ID --recording MBID` | Correct a wrong match: make the track that recording, retag, move if the path changes |
 | `td refile [--dry-run]` | Re-check every track against MusicBrainz, retag, move files whose path changed |
-| `td lengths [TRACK] [--fix]` | Files whose length is off their recording by more than max(10 s, 5 %), sorted into padded, external, metadata (a better-fitting recording to `td retag` to), broken, longer and shorter. `--fix` downloads the last three again and keeps the old file under `<library>/.tapedeck-backup/` |
+| `td lengths [TRACK] [--fix]` | Files whose length is off their recording by more than max(10 s, 5 %), sorted into padded, external, metadata (a better-fitting recording to `td retag` to), release (Deezer has a version this long, so MusicBrainz is off; never replaced), broken, longer and shorter. `--fix` downloads the last three again and keeps the old file under `<library>/.tapedeck-backup/` |
 | `td import DIR [--apply] [--move] [--delete-duplicates]` | Bring an existing folder (say, Explo's downloads) into the library; dry run by default, `--apply` copies and leaves the source alone, `--move` moves |
 | `td remote ls` / `td remote rm GLOB [--yes]` | List or bulk-delete playlists on a sync target; `rm` backs up first |
 | `td remote backup [GLOB]` / `td remote restore FILE` | Save target playlists as m3u8 + JSON, or recreate one from such a file |

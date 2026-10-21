@@ -5,6 +5,9 @@
 //! - padded: leading and trailing silence explain the difference (same song, left alone),
 //! - external: an external library has the recording (`td external dedupe` takes that one),
 //! - metadata: another MusicBrainz recording of the song fits the file (`td retag` relinks it),
+//! - release: a Deezer track of the same title and artist fits the file, so the audio is a real
+//!   released version and MusicBrainz is the one that is off (Nightcall at 62 s); via the Deezer
+//!   track's ISRC MusicBrainz often names the recording to relink to,
 //! - broken (under half the length), longer, shorter: the audio is wrong.
 //!
 //! `--fix` downloads the last three afresh, ignoring the remembered URL, and replaces a file only
@@ -17,6 +20,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+use serde_json::Value;
 use serde_json::json;
 use tokio::sync::mpsc::Sender;
 
@@ -27,6 +31,8 @@ use crate::{
     download::ytdlp::{file_secs, max_drift},
     external::{find_external, is_external, norm},
     library,
+    lyrics::primary_artist,
+    musicbrainz::{strip_feat, version_words},
 };
 
 /// Where `--fix` keeps the files it replaced, relative to the library.
@@ -47,6 +53,26 @@ fn classify(want: f64, got: f64, silence: Option<(f64, f64)>) -> Option<&'static
         return Some("padded");
     }
     Some(if got > want { "longer" } else { "shorter" })
+}
+
+/// Deezer search hits with the same title (no extra "live"/"radio edit"), the same primary artist
+/// and a length within `max_drift(got)` of the file: (seconds, ISRC).
+fn deezer_fits(v: &Value, artist: &str, title: &str, got: f64) -> Vec<(f64, Option<String>)> {
+    let (artist, title) = (norm(&primary_artist(artist)), norm(&strip_feat(title)));
+    let ours = version_words(&title);
+    v["data"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|h| {
+            let t = h["title"].as_str().unwrap_or("");
+            norm(&strip_feat(h["title_short"].as_str().unwrap_or(t))) == title
+                && version_words(t).iter().all(|w| ours.contains(w))
+                && norm(h["artist"]["name"].as_str().unwrap_or("")) == artist
+        })
+        .filter_map(|h| Some((h["duration"].as_f64()?, h["isrc"].as_str().map(str::to_owned))))
+        .filter(|(d, _)| (d - got).abs() <= max_drift(got))
+        .collect()
 }
 
 /// Leading and trailing silence from ffmpeg's silencedetect log, for a file `len` seconds long.
@@ -141,6 +167,16 @@ impl App {
                     }
                 }
             }
+            if matches!(kind, "longer" | "shorter") {
+                match self.deezer_release(t, got).await {
+                    Ok(Some(n)) => {
+                        kind = "release";
+                        note = Some(n);
+                    }
+                    Ok(None) => {}
+                    Err(e) => info(tx, format!("deezer {} - {}: {e:#}", t.artist, t.title)).await?,
+                }
+            }
             hits.push((t, want, got, kind, note));
         }
 
@@ -233,6 +269,34 @@ impl App {
         info(tx, format!("{fixed} replaced, {kept} kept")).await
     }
 
+    /// A Deezer release of `t` as long as the file (`got` seconds), as a note: its length and,
+    /// when its ISRC leads to a fitting MusicBrainz recording, the `td retag` line.
+    async fn deezer_release(&self, t: &Track, got: f64) -> Result<Option<String>> {
+        let http = crate::http();
+        // The plain query; the advanced `artist:"…" track:"…"` form often finds nothing.
+        let q = format!("{} {}", primary_artist(&t.artist), strip_feat(&t.title));
+        let v: Value = http
+            .get(format!("https://api.deezer.com/search?limit=25&q={}", urlencoding::encode(&q)))
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        let Some((secs, isrc)) = deezer_fits(&v, &t.artist, &t.title, got).into_iter().next() else { return Ok(None) };
+        let mut note = format!("Deezer has it at {}s", secs as i64);
+        if let Some(isrc) = isrc.as_deref() {
+            let fits = |l: &Option<i64>| l.is_some_and(|l| (l as f64 / 1000.0 - got).abs() <= max_drift(got));
+            match self.mb.isrc(isrc).await {
+                Ok(recs) => match recs.iter().find(|(mbid, l)| *mbid != t.recording_mbid && fits(l)) {
+                    Some((mbid, _)) => note += &format!(": td retag {} --recording {mbid}", t.id),
+                    None => note += &format!(", ISRC {isrc}"),
+                },
+                Err(_) => note += &format!(", ISRC {isrc}"),
+            }
+        }
+        Ok(Some(note))
+    }
+
     /// Download `t` afresh and swap it in when the new file is closer to `want` seconds than the
     /// old one (`old_off` seconds off) and within max(5 s, 3 %). Returns the new relative path.
     async fn replace_audio(&self, t: &Track, want: f64, old_off: f64) -> Result<PathBuf> {
@@ -274,6 +338,18 @@ mod tests {
         assert_eq!(classify(157.0, 9.0, None), Some("broken"));
         assert_eq!(classify(200.0, 215.0, Some((3.0, 4.0))), Some("padded"));
         assert_eq!(classify(252.0, 349.0, Some((1.0, 2.0))), Some("longer"));
+    }
+
+    #[test]
+    fn deezer_hit_must_match_title_artist_and_length() {
+        let v = serde_json::json!({ "data": [
+            { "id": 1, "title": "Nightcall (Radio Edit)", "title_short": "Nightcall", "duration": 200, "artist": { "name": "Kavinsky" } },
+            { "id": 2, "title": "Nightcall", "title_short": "Nightcall", "duration": 259, "isrc": "FRS710900410", "artist": { "name": "Kavinsky" } },
+            { "id": 3, "title": "Nightcall", "title_short": "Nightcall", "duration": 258, "artist": { "name": "Karaoke Stars" } },
+            { "id": 4, "title": "Nightcall (Live)", "title_short": "Nightcall", "duration": 257, "artist": { "name": "Kavinsky" } },
+        ]});
+        assert_eq!(deezer_fits(&v, "Kavinsky", "Nightcall", 257.0), vec![(259.0, Some("FRS710900410".to_string()))]);
+        assert!(deezer_fits(&v, "Kavinsky", "Nightcall", 330.0).is_empty());
     }
 
     #[test]
