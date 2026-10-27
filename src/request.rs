@@ -298,100 +298,109 @@ pub fn playlist_id(url: &str) -> Result<String> {
     Ok(id.to_string())
 }
 
+/// One playlist video and what MusicBrainz made of it.
+#[derive(Clone, Debug)]
+pub struct PlaylistEntry {
+    /// 1-based, as in YouTube.
+    pub pos: usize,
+    pub source: Source,
+    pub candidates: Vec<Candidate>,
+    pub sure: bool,
+    pub reason: String,
+    /// The library already has the top candidate.
+    pub have: bool,
+}
+
+/// A playlist read and matched, not yet imported.
+#[derive(Clone, Debug)]
+pub struct PlaylistPlan {
+    pub id: String,
+    pub name: String,
+    pub entries: Vec<PlaylistEntry>,
+}
+
+impl PlaylistPlan {
+    pub fn unsure(&self) -> impl Iterator<Item = &PlaylistEntry> {
+        self.entries.iter().filter(|e| !e.sure)
+    }
+}
+
+/// How an import went: tracks on the playlist, downloads, and the failures by name.
+#[derive(Debug, Default)]
+pub struct ImportReport {
+    pub tracks: usize,
+    pub downloaded: usize,
+    pub failed: Vec<String>,
+}
+
 impl App {
-    /// Match every video of a playlist to a recording; with `apply`, download the sure ones
-    /// (and the `also` positions) and write the playlist in YouTube's order.
-    pub(crate) async fn import_playlist(
-        &self,
-        url: &str,
-        apply: bool,
-        also: &[usize],
-        tx: &Sender<Event>,
-    ) -> Result<()> {
+    /// Read a playlist and match every video to a recording. Nothing is written.
+    pub(crate) async fn analyze_playlist(&self, url: &str, tx: &Sender<Event>) -> Result<PlaylistPlan> {
         let id = playlist_id(url)?;
         let pl = self.downloader.playlist(&format!("https://www.youtube.com/playlist?list={id}")).await?;
         let name = pl["title"].as_str().unwrap_or(&id).trim_start_matches("Album - ").to_string();
         let owner = pl["channel"].as_str().or(pl["uploader"].as_str()).map(|s| s.to_lowercase());
-        let entries: Vec<&Value> = pl["entries"].as_array().map(|e| e.iter().collect()).unwrap_or_default();
-        ensure!(!entries.is_empty(), "{name:?} has no videos (or is private)");
-        info(tx, format!("{name}: {} videos", entries.len())).await?;
-        let mut rows = vec![];
-        let mut take: Vec<(usize, Candidate)> = vec![];
-        for (i, e) in entries.iter().enumerate() {
+        let videos: Vec<&Value> = pl["entries"].as_array().map(|e| e.iter().collect()).unwrap_or_default();
+        ensure!(!videos.is_empty(), "{name:?} has no videos (or is private)");
+        info(tx, format!("{name}: {} videos", videos.len())).await?;
+        let mut entries = vec![];
+        for (i, v) in videos.iter().enumerate() {
             let pos = i + 1;
-            let Some(vurl) = e["url"]
+            let Some(vurl) = v["url"]
                 .as_str()
                 .map(str::to_string)
-                .or_else(|| e["id"].as_str().map(|v| format!("https://www.youtube.com/watch?v={v}")))
+                .or_else(|| v["id"].as_str().map(|v| format!("https://www.youtube.com/watch?v={v}")))
             else {
                 continue;
             };
-            let mut src = source_from_video(&vurl, e);
-            progress_at(tx, pos, entries.len(), format!("{} - {}", src.artist, src.title)).await?;
+            let mut source = source_from_video(&vurl, v);
+            progress_at(tx, pos, videos.len(), format!("{} - {}", source.artist, source.title)).await?;
             // The curator's own uploads (a label's playlist of its catalogue) are as good as the
             // artist's: don't let the uploader check doubt them.
-            if src.channel.as_deref().map(str::to_lowercase) == owner {
-                src.channel = None;
+            if source.channel.as_deref().map(str::to_lowercase) == owner {
+                source.channel = None;
             }
-            let length = if src.music { src.duration_ms } else { None };
-            let cands = match self.mb.search_candidates(&src.artist, &src.title, length).await {
+            let length = if source.music { source.duration_ms } else { None };
+            let candidates = match self.mb.search_candidates(&source.artist, &source.title, length).await {
                 Ok(c) => c,
                 Err(e) => {
                     info(tx, format!("{pos}: musicbrainz: {e:#}")).await?;
                     vec![]
                 }
             };
-            let (sure, reason) = judge(&src, &cands);
-            let have = match cands.first() {
+            let (sure, reason) = judge(&source, &candidates);
+            let have = match candidates.first() {
                 Some(c) => {
                     let t = self.db().track_by_mbid(&c.mbid)?;
                     t.filter(present).is_some()
                 }
                 None => false,
             };
-            let status = match (sure, have) {
-                (_, true) if sure || also.contains(&pos) => "have",
-                (true, _) => "new",
-                (false, _) if also.contains(&pos) && !cands.is_empty() => "take",
-                _ => "ask",
-            };
-            let best = cands.first();
-            rows.push(json!({
-                "pick": pos,
-                "status": status,
-                "artist": best.map_or(src.artist.as_str(), |c| c.artist.as_str()),
-                "title": best.map_or(src.title.as_str(), |c| c.title.as_str()),
-                "album": best.map(|c| c.album.as_str()),
-                "note": if status == "ask" { format!("{reason}; sent {:?}", src.raw_title) } else { String::new() },
-            }));
-            if status != "ask"
-                && let Some(c) = best
-            {
-                take.push((pos, c.clone()));
-            }
+            entries.push(PlaylistEntry { pos, source, candidates, sure, reason, have });
         }
-        tx.send(Event::Data { data: json!(rows) }).await.context("client went away")?;
-        let asks = rows.iter().filter(|r| r["status"] == "ask").count();
-        if !apply {
-            return info(
-                tx,
-                format!(
-                    "{} to take, {asks} unsure; --apply imports, --also N,M takes unsure ones' top match too",
-                    take.len()
-                ),
-            )
-            .await;
-        }
+        Ok(PlaylistPlan { id, name, entries })
+    }
+
+    /// Import a plan: the sure entries' top match plus `picks` (position, candidate index) for
+    /// unsure ones, in YouTube's order; download what is missing; write and push the playlist.
+    pub(crate) async fn apply_playlist(
+        &self,
+        plan: &PlaylistPlan,
+        picks: &[(usize, usize)],
+        tx: &Sender<Event>,
+    ) -> Result<ImportReport> {
         let mut ids = vec![];
-        for (pos, c) in &take {
+        for e in &plan.entries {
+            let ci = if e.sure { Some(0) } else { picks.iter().find(|(p, _)| *p == e.pos).map(|(_, c)| *c) };
+            let Some(c) = ci.and_then(|ci| e.candidates.get(ci)) else { continue };
             // Bind first: the DB guard must not live across the await below.
             let existing = self.db().track_by_mbid(&c.mbid)?;
             let tid = match existing {
                 Some(t) => t.id,
                 None => match self.mb.recording(&c.mbid).await {
                     Ok(r) => self.db().insert_track(&new_track(&c.mbid, &r))?,
-                    Err(e) => {
-                        info(tx, format!("{pos}: {} - {}: {e:#}", c.artist, c.title)).await?;
+                    Err(err) => {
+                        info(tx, format!("{}: {} - {}: {err:#}", e.pos, c.artist, c.title)).await?;
                         continue;
                     }
                 },
@@ -400,14 +409,87 @@ impl App {
                 ids.push(tid);
             }
         }
-        let kind = format!("youtube-{id}");
-        let pid = self.db().upsert_playlist(&kind, &name, &kind, &chrono_now()[..10])?;
+        let kind = format!("youtube-{}", plan.id);
+        let pid = self.db().upsert_playlist(&kind, &plan.name, &kind, &chrono_now()[..10])?;
         self.db().set_playlist_tracks(pid, &ids)?;
-        info(tx, format!("{name}: {} tracks; downloading what is missing", ids.len())).await?;
+        info(tx, format!("{}: {} tracks; downloading what is missing", plan.name, ids.len())).await?;
+        let before: Vec<i64> = self.db().playlist_tracks(pid)?.iter().filter(|t| !present(t)).map(|t| t.id).collect();
         // The usual download step (external libraries first, lyrics after), then this playlist.
         let downloaded = self.sync(None, true, true, tx).await;
         self.publish_playlist(pid, tx).await?;
-        downloaded
+        let after = self.db().playlist_tracks(pid)?;
+        let report = ImportReport {
+            tracks: ids.len(),
+            downloaded: after.iter().filter(|t| before.contains(&t.id) && present(t)).count(),
+            failed: after
+                .iter()
+                .filter(|t| before.contains(&t.id) && !present(t))
+                .map(|t| format!("{} - {}", t.artist, t.title))
+                .collect(),
+        };
+        // Failures elsewhere in the queue are not this import's; report ours, not the sync's.
+        if let Err(e) = downloaded
+            && report.failed.is_empty()
+        {
+            tracing::debug!("import: other downloads failed: {e:#}");
+        }
+        Ok(report)
+    }
+
+    /// `td import <link>`: the dry run, or with `apply` the import (`also` takes the top match
+    /// of those unsure positions too).
+    pub(crate) async fn import_playlist(
+        &self,
+        url: &str,
+        apply: bool,
+        also: &[usize],
+        tx: &Sender<Event>,
+    ) -> Result<()> {
+        let plan = self.analyze_playlist(url, tx).await?;
+        let rows: Vec<Value> = plan
+            .entries
+            .iter()
+            .map(|e| {
+                let taken = e.sure || (also.contains(&e.pos) && !e.candidates.is_empty());
+                let status = match (taken, e.have, e.sure) {
+                    (true, true, _) => "have",
+                    (true, false, true) => "new",
+                    (true, false, false) => "take",
+                    (false, ..) => "ask",
+                };
+                let best = e.candidates.first();
+                json!({
+                    "pick": e.pos,
+                    "status": status,
+                    "artist": best.map_or(e.source.artist.as_str(), |c| c.artist.as_str()),
+                    "title": best.map_or(e.source.title.as_str(), |c| c.title.as_str()),
+                    "album": best.map(|c| c.album.as_str()),
+                    "note": if taken { String::new() } else { format!("{}; sent {:?}", e.reason, e.source.raw_title) },
+                })
+            })
+            .collect();
+        tx.send(Event::Data { data: json!(rows) }).await.context("client went away")?;
+        let asks = rows.iter().filter(|r| r["status"] == "ask").count();
+        if !apply {
+            return info(
+                tx,
+                format!(
+                    "{} to take, {asks} unsure; --apply imports, --also N,M takes unsure ones' top match too",
+                    rows.len() - asks
+                ),
+            )
+            .await;
+        }
+        let picks: Vec<(usize, usize)> = also.iter().map(|p| (*p, 0)).collect();
+        let r = self.apply_playlist(&plan, &picks, tx).await?;
+        ensure!(
+            r.failed.is_empty(),
+            "{} of {} downloads failed: {}; `td retry` queues them again",
+            r.failed.len(),
+            r.failed.len() + r.downloaded,
+            r.failed.join(", ")
+        );
+        Ok(())
     }
 }
 
