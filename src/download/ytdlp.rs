@@ -182,6 +182,11 @@ impl Downloader for YtDlp {
         "ytdlp"
     }
 
+    async fn playlist(&self, url: &str) -> Result<Value> {
+        let out = self.run(&["--flat-playlist", "-J", "--no-warnings", "--quiet"], url.as_ref()).await?;
+        Ok(serde_json::from_str(&out).context("yt-dlp playlist")?)
+    }
+
     async fn probe(&self, url: &str) -> Result<Value> {
         let out = self.run(&["--dump-json", "--no-warnings", "--quiet", "--no-playlist"], url.as_ref()).await?;
         let line = out.lines().next().context("yt-dlp returned nothing for that link")?;

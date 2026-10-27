@@ -23,6 +23,9 @@ pub trait Downloader: Send + Sync {
     async fn download(&self, track: &Track, dest_dir: &Path) -> Result<Downloaded>;
     /// Metadata of a link (title, channel, duration, …) without downloading it.
     async fn probe(&self, url: &str) -> Result<serde_json::Value>;
+    /// A playlist's title, owner and entries (title, channel, duration, id, url), without
+    /// looking at each video.
+    async fn playlist(&self, url: &str) -> Result<serde_json::Value>;
 }
 
 pub fn from_config(cfg: &Config) -> Result<Box<dyn Downloader>> {

@@ -13,6 +13,28 @@ hand-written); a same-titled playlist on the target is backed up first and repla
 `td unpush` removes a playlist from a target only, backup first. `td remote ls`, `rm`,
 `backup` and `restore` manage what another tool left on the target.
 
+## YouTube playlists
+
+`td import <link>` takes a YouTube or YouTube Music playlist (any link with `list=`, album
+lists `OLAK5uy_…` included). Each video is matched to a MusicBrainz recording the way a
+request is, then downloaded through the normal path, YouTube Music's song first, length
+checked. So a playlist of music videos still ends up as album audio without the intros and
+skits. The playlist keeps YouTube's title and order, gets its own m3u8
+(`youtube-<list id>.m3u8`) and is pushed like any other. Running it again later picks up
+new entries.
+
+```sh
+td import "https://www.youtube.com/playlist?list=PL…"            # dry run: what matches, what is unsure
+td import "https://www.youtube.com/playlist?list=PL…" --apply    # import the sure ones
+td import "https://www.youtube.com/playlist?list=PL…" --apply --also 4,9   # and the top match of 4 and 9
+```
+
+An entry is sure when title, artist and version match its MusicBrainz recording and the
+uploader is the artist, a label or Topic channel, or the playlist's own curator. Everything
+else is listed with the reason. What an external library (Lidarr) already has is not
+downloaded. Mixes (`RD…` lists, which YouTube makes up as you go) and private lists (liked
+music, watch later; they need a signed-in account) are refused; unlisted playlists work.
+
 ## Plex
 
 The library (as Plex sees it, after `path_map`) has to be inside one of the folders the

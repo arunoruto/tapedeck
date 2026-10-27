@@ -223,7 +223,8 @@ fn search_candidates_from(v: &Value, artist: &str, title: &str, length_ms: Optio
 
 fn rank_search_hits<'a>(v: &'a Value, artist: &str, title: &str, length_ms: Option<i64>) -> Vec<&'a Value> {
     const OFF_KINDS: &[&str] = &["karaoke", "instrumental", "live", "cover", "tribute", "remix"];
-    let wanted = artist.to_lowercase();
+    // Normalised on both sides: MusicBrainz writes "a‐ha" with U+2010, a search says "a-ha".
+    let wanted = norm(artist);
     let allowed = version_words(title);
     let Some(all) = v["recordings"].as_array() else { return vec![] };
     let mut hits: Vec<&Value> = all
@@ -232,7 +233,7 @@ fn rank_search_hits<'a>(v: &'a Value, artist: &str, title: &str, length_ms: Opti
         // Music-video recordings carry the intro and outro; never the track.
         .filter(|r| r["video"].as_bool() != Some(true))
         // Covers match the search too (the work links back to the original); keep the artist's own.
-        .filter(|r| wanted.is_empty() || credit(&r["artist-credit"]).0.to_lowercase().contains(&wanted))
+        .filter(|r| wanted.is_empty() || norm(&credit(&r["artist-credit"]).0).contains(&wanted))
         .filter(|r| version_words(r["title"].as_str().unwrap_or("")).iter().all(|w| allowed.contains(w)))
         .filter(|r| {
             let dis = r["disambiguation"].as_str().unwrap_or("").to_lowercase();
@@ -468,6 +469,15 @@ mod tests {
         assert_eq!(strip_feat("Blame feat. John Newman"), "Blame");
         assert_eq!(strip_feat("Live and Let Die"), "Live and Let Die");
         assert_eq!(lucene(r#"Say "Hi""#), r#"Say \"Hi\""#);
+    }
+
+    #[test]
+    fn artist_matches_across_unicode_hyphens() {
+        let hit = |id: &str, name: &str| json!({"id": id, "score": 100, "title": "The Blue Sky", "artist-credit": [{"name": name, "artist": {"id": "a"}}], "releases": []});
+        let v = json!({"recordings": [hit("u2010", "a\u{2010}ha"), hit("other", "Sky Band")]});
+        let ids: Vec<&str> =
+            rank_search_hits(&v, "a-ha", "The Blue Sky", None).iter().filter_map(|r| r["id"].as_str()).collect();
+        assert_eq!(ids, ["u2010"]);
     }
 
     #[test]

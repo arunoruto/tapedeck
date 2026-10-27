@@ -160,10 +160,17 @@ pub enum Command {
         #[command(subcommand)]
         action: RemoteCmd,
     },
-    /// Bring a folder of audio files into the library. Dry run by default; --apply copies the files
-    /// in and leaves the source alone; --move moves them instead.
+    /// Bring a folder of audio files into the library, or a YouTube / YouTube Music playlist
+    /// (a link with `list=`). Dry run by default. A folder: --apply copies the files in and
+    /// leaves the source alone; --move moves them instead. A playlist: every video is matched
+    /// to a MusicBrainz recording; --apply downloads the sure ones as album audio and writes a
+    /// playlist in YouTube's order; --also 3,7 takes the top match for unsure entries too.
     Import {
         dir: PathBuf,
+        /// Playlist entries (positions from the dry run) to take the top match for anyway.
+        #[arg(long, value_delimiter = ',')]
+        #[serde(default)]
+        also: Vec<usize>,
         /// Copy the files into the library (default is a dry run that changes nothing).
         #[arg(long)]
         apply: bool,

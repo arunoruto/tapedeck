@@ -18,6 +18,7 @@
 | `td lengths TRACK --mark good\|bad\|relink\|none` | Judge a finding after listening (the TUI's Review tab does the same with `g` `b` `r` `u`) |
 | `td lengths [TRACK] --fix` | Act on the verdicts only: bad files are downloaded again (kept only when closer, old file under `<library>/.tapedeck-backup/`), relink ones retagged |
 | `td import DIR [--apply] [--move] [--delete-duplicates]` | Bring an existing folder (say, Explo's downloads) into the library; dry run by default, `--apply` copies and leaves the source alone, `--move` moves |
+| `td import PLAYLIST-URL [--apply] [--also N,M]` | A YouTube / YouTube Music playlist: each video matched to a MusicBrainz recording and downloaded as album audio, written as a playlist in YouTube's order; dry run by default, unsure entries only with `--also`; see [Playlists](playlists.md#youtube-playlists) |
 | `td remote ls` / `td remote rm GLOB [--yes]` | List or bulk-delete playlists on a sync target; `rm` backs up first |
 | `td remote backup [GLOB]` / `td remote restore FILE` | Save target playlists as m3u8 + JSON, or recreate one from such a file |
 | `td request URL\|"Artist - Title" [--pick N] [--video]` | Request one song: identify, fetch, file, add to this year's Requests playlist |

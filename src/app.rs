@@ -393,7 +393,10 @@ impl App {
                 ensure!(!self.config.external.paths.is_empty(), "no external.paths configured");
                 self.external_dedupe(dry_run, tx).await
             }
-            Command::Import { dir, apply, r#move, copy: _, delete_duplicates } => {
+            Command::Import { dir, apply, also, .. } if dir.to_string_lossy().starts_with("http") => {
+                self.import_playlist(&dir.to_string_lossy(), apply, &also, tx).await
+            }
+            Command::Import { dir, apply, r#move, copy: _, delete_duplicates, also: _ } => {
                 self.import(&dir, apply, !r#move, delete_duplicates, tx).await
             }
         }
@@ -1347,7 +1350,13 @@ impl App {
         Ok(v)
     }
 
-    async fn sync(&self, only: Option<String>, no_push: bool, no_fetch: bool, tx: &Sender<Event>) -> Result<()> {
+    pub(crate) async fn sync(
+        &self,
+        only: Option<String>,
+        no_push: bool,
+        no_fetch: bool,
+        tx: &Sender<Event>,
+    ) -> Result<()> {
         let cfg = &self.config;
 
         // 1. ListenBrainz playlists → DB rows (new tracks resolved through MusicBrainz).
@@ -1694,6 +1703,10 @@ pub(crate) fn new_track<'a>(recording_mbid: &'a str, r: &'a Recording) -> NewTra
 /// their full ListenBrainz title, which is also what their archive file says.
 pub fn remote_title(cfg: &Config, p: &Playlist, all: &[Playlist]) -> String {
     match all.iter().find(|q| q.kind == p.kind) {
+        // An imported playlist keeps its own title; the kind is only its list id.
+        Some(cur) if cur.id == p.id && p.kind.starts_with("youtube-") => {
+            cfg.sync.playlist_title.replace("{name}", &p.name).replace("{kind}", &p.kind)
+        }
         Some(cur) if cur.id == p.id => {
             cfg.sync.playlist_title.replace("{name}", &display_name(&p.kind)).replace("{kind}", &p.kind)
         }

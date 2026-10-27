@@ -2,17 +2,23 @@
 //! out which recording it is, fetches the best audio for it, files it, and puts it on this
 //! year's "Requests" playlist. It asks only when it is not sure: a cover by someone else, a
 //! remix the recording doesn't carry, no MusicBrainz match at all.
+//!
+//! A YouTube playlist (`td import <link>`) is the same, once per video: each entry is matched
+//! to a MusicBrainz recording and downloaded as album audio through the normal path, never as
+//! the video itself (playlists are mostly music videos, with intros and skits). Unsure entries
+//! are listed and only taken with `--also`. Mixes (endless `RD…` lists) and private lists
+//! (Liked, Watch later: they need a signed-in account) are refused.
 
 use std::path::Path;
 
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use serde::Serialize;
-use serde_json::Value;
+use serde_json::{Value, json};
 use tokio::sync::mpsc::Sender;
 
 use crate::{
     App, Event,
-    app::{display_name, info, new_track},
+    app::{display_name, info, new_track, progress_at},
     db::Track,
     external::{chrono_now, find_external, present},
     library,
@@ -275,6 +281,136 @@ impl App {
     }
 }
 
+/// The `list=` id of a playlist link, refusing the kinds yt-dlp cannot read without an account
+/// or that never end.
+pub fn playlist_id(url: &str) -> Result<String> {
+    let id = url
+        .split(['?', '&'])
+        .find_map(|kv| kv.strip_prefix("list="))
+        .filter(|id| !id.is_empty())
+        .with_context(|| format!("{url} is not a playlist link (no list=)"))?;
+    if id.starts_with("RD") {
+        bail!("{id} is a mix: YouTube makes those up as you go and they never end");
+    }
+    if matches!(id, "LL" | "LM" | "WL") {
+        bail!("{id} is a private list (liked music, watch later); it needs a signed-in account");
+    }
+    Ok(id.to_string())
+}
+
+impl App {
+    /// Match every video of a playlist to a recording; with `apply`, download the sure ones
+    /// (and the `also` positions) and write the playlist in YouTube's order.
+    pub(crate) async fn import_playlist(
+        &self,
+        url: &str,
+        apply: bool,
+        also: &[usize],
+        tx: &Sender<Event>,
+    ) -> Result<()> {
+        let id = playlist_id(url)?;
+        let pl = self.downloader.playlist(&format!("https://www.youtube.com/playlist?list={id}")).await?;
+        let name = pl["title"].as_str().unwrap_or(&id).trim_start_matches("Album - ").to_string();
+        let owner = pl["channel"].as_str().or(pl["uploader"].as_str()).map(|s| s.to_lowercase());
+        let entries: Vec<&Value> = pl["entries"].as_array().map(|e| e.iter().collect()).unwrap_or_default();
+        ensure!(!entries.is_empty(), "{name:?} has no videos (or is private)");
+        info(tx, format!("{name}: {} videos", entries.len())).await?;
+        let mut rows = vec![];
+        let mut take: Vec<(usize, Candidate)> = vec![];
+        for (i, e) in entries.iter().enumerate() {
+            let pos = i + 1;
+            let Some(vurl) = e["url"]
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| e["id"].as_str().map(|v| format!("https://www.youtube.com/watch?v={v}")))
+            else {
+                continue;
+            };
+            let mut src = source_from_video(&vurl, e);
+            progress_at(tx, pos, entries.len(), format!("{} - {}", src.artist, src.title)).await?;
+            // The curator's own uploads (a label's playlist of its catalogue) are as good as the
+            // artist's: don't let the uploader check doubt them.
+            if src.channel.as_deref().map(str::to_lowercase) == owner {
+                src.channel = None;
+            }
+            let length = if src.music { src.duration_ms } else { None };
+            let cands = match self.mb.search_candidates(&src.artist, &src.title, length).await {
+                Ok(c) => c,
+                Err(e) => {
+                    info(tx, format!("{pos}: musicbrainz: {e:#}")).await?;
+                    vec![]
+                }
+            };
+            let (sure, reason) = judge(&src, &cands);
+            let have = match cands.first() {
+                Some(c) => {
+                    let t = self.db().track_by_mbid(&c.mbid)?;
+                    t.filter(present).is_some()
+                }
+                None => false,
+            };
+            let status = match (sure, have) {
+                (_, true) if sure || also.contains(&pos) => "have",
+                (true, _) => "new",
+                (false, _) if also.contains(&pos) && !cands.is_empty() => "take",
+                _ => "ask",
+            };
+            let best = cands.first();
+            rows.push(json!({
+                "pick": pos,
+                "status": status,
+                "artist": best.map_or(src.artist.as_str(), |c| c.artist.as_str()),
+                "title": best.map_or(src.title.as_str(), |c| c.title.as_str()),
+                "album": best.map(|c| c.album.as_str()),
+                "note": if status == "ask" { format!("{reason}; sent {:?}", src.raw_title) } else { String::new() },
+            }));
+            if status != "ask"
+                && let Some(c) = best
+            {
+                take.push((pos, c.clone()));
+            }
+        }
+        tx.send(Event::Data { data: json!(rows) }).await.context("client went away")?;
+        let asks = rows.iter().filter(|r| r["status"] == "ask").count();
+        if !apply {
+            return info(
+                tx,
+                format!(
+                    "{} to take, {asks} unsure; --apply imports, --also N,M takes unsure ones' top match too",
+                    take.len()
+                ),
+            )
+            .await;
+        }
+        let mut ids = vec![];
+        for (pos, c) in &take {
+            // Bind first: the DB guard must not live across the await below.
+            let existing = self.db().track_by_mbid(&c.mbid)?;
+            let tid = match existing {
+                Some(t) => t.id,
+                None => match self.mb.recording(&c.mbid).await {
+                    Ok(r) => self.db().insert_track(&new_track(&c.mbid, &r))?,
+                    Err(e) => {
+                        info(tx, format!("{pos}: {} - {}: {e:#}", c.artist, c.title)).await?;
+                        continue;
+                    }
+                },
+            };
+            if !ids.contains(&tid) {
+                ids.push(tid);
+            }
+        }
+        let kind = format!("youtube-{id}");
+        let pid = self.db().upsert_playlist(&kind, &name, &kind, &chrono_now()[..10])?;
+        self.db().set_playlist_tracks(pid, &ids)?;
+        info(tx, format!("{name}: {} tracks; downloading what is missing", ids.len())).await?;
+        // The usual download step (external libraries first, lyrics after), then this playlist.
+        let downloaded = self.sync(None, true, true, tx).await;
+        self.publish_playlist(pid, tx).await?;
+        downloaded
+    }
+}
+
 /// yt-dlp's `--dump-json` for the link, boiled down.
 fn source_from_video(url: &str, v: &Value) -> Source {
     let s = |k: &str| v[k].as_str().map(str::to_string);
@@ -363,6 +499,23 @@ pub fn judge(src: &Source, candidates: &[Candidate]) -> (bool, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn playlist_links_and_flat_entries() {
+        assert_eq!(playlist_id("https://www.youtube.com/playlist?list=PLmXxq").unwrap(), "PLmXxq");
+        assert_eq!(playlist_id("https://music.youtube.com/watch?v=abc&list=OLAK5uy_x&si=1").unwrap(), "OLAK5uy_x");
+        assert!(playlist_id("https://www.youtube.com/watch?v=abc&list=RDabc").unwrap_err().to_string().contains("mix"));
+        assert!(playlist_id("https://music.youtube.com/playlist?list=LM").is_err());
+        assert!(playlist_id("https://www.youtube.com/watch?v=abc").is_err());
+        // What `--flat-playlist -J` gives per entry: no artist/track fields, so the title is split.
+        let e = serde_json::json!({ "title": "Starship - Nothing's Gonna Stop Us Now (Official Music Video) [HD]",
+            "duration": 268, "channel": "RHINO", "id": "3wxyN3z9PL4", "url": "https://www.youtube.com/watch?v=3wxyN3z9PL4" });
+        let s = source_from_video("https://www.youtube.com/watch?v=3wxyN3z9PL4", &e);
+        assert_eq!(
+            (s.artist.as_str(), s.title.as_str(), s.duration_ms, s.music),
+            ("Starship", "Nothing's Gonna Stop Us Now", Some(268_000), false)
+        );
+    }
 
     #[test]
     fn titles_are_cleaned_and_split() {
