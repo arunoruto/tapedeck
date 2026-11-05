@@ -21,7 +21,10 @@ request is, then downloaded through the normal path, YouTube Music's song first,
 checked. So a playlist of music videos still ends up as album audio without the intros and
 skits. The playlist keeps YouTube's title and order, gets its own m3u8
 (`youtube-<list id>.m3u8`) and is pushed like any other. Running it again later picks up
-new entries.
+new entries; a video imported before keeps the recording it got then, and a row an earlier
+run added that is no longer on the playlist (and was never downloaded) is dropped. An import
+downloads its own playlist only, not the rest of the queue. For an album's playlist, a
+recording from the release the playlist is named after wins over the same song on a best-of.
 
 ```sh
 td import "https://www.youtube.com/playlist?list=PL…"            # dry run: what matches, what is unsure

@@ -360,14 +360,46 @@ impl App {
             if source.channel.as_deref().map(str::to_lowercase) == owner {
                 source.channel = None;
             }
+            // A video imported before keeps its track: MusicBrainz's search ranks ties in no stable
+            // order, and a second run must not pick another recording of the same song.
+            let earlier = match &source.video_id {
+                Some(v) => {
+                    let tid = self.db().meta_get(&format!("yt.{id}.{v}"))?.and_then(|s| s.parse::<i64>().ok());
+                    match tid {
+                        Some(tid) => self.db().track_by_id(tid)?,
+                        None => None,
+                    }
+                }
+                None => None,
+            };
+            if let Some(t) = earlier {
+                let c = Candidate {
+                    mbid: t.recording_mbid.clone(),
+                    title: t.title.clone(),
+                    artist: t.artist.clone(),
+                    album: t.album.clone(),
+                    length_ms: t.duration_ms,
+                };
+                let have = present(&t);
+                entries.push(PlaylistEntry {
+                    pos,
+                    source,
+                    candidates: vec![c],
+                    sure: true,
+                    reason: "imported before".into(),
+                    have,
+                });
+                continue;
+            }
             let length = if source.music { source.duration_ms } else { None };
-            let candidates = match self.mb.search_candidates(&source.artist, &source.title, length).await {
+            let mut candidates = match self.mb.search_candidates(&source.artist, &source.title, length).await {
                 Ok(c) => c,
                 Err(e) => {
                     info(tx, format!("{pos}: musicbrainz: {e:#}")).await?;
                     vec![]
                 }
             };
+            prefer_named_release(&mut candidates, &name);
             let (sure, reason) = judge(&source, &candidates);
             let have = match candidates.first() {
                 Some(c) => {
@@ -390,6 +422,7 @@ impl App {
         tx: &Sender<Event>,
     ) -> Result<ImportReport> {
         let mut ids = vec![];
+        let mut taken: Vec<(String, i64)> = vec![];
         for e in &plan.entries {
             let ci = if e.sure { Some(0) } else { picks.iter().find(|(p, _)| *p == e.pos).map(|(_, c)| *c) };
             let Some(c) = ci.and_then(|ci| e.candidates.get(ci)) else { continue };
@@ -408,14 +441,30 @@ impl App {
             if !ids.contains(&tid) {
                 ids.push(tid);
             }
+            if let Some(v) = &e.source.video_id {
+                taken.push((format!("yt.{}.{v}", plan.id), tid));
+            }
         }
         let kind = format!("youtube-{}", plan.id);
         let pid = self.db().upsert_playlist(&kind, &plan.name, &kind, &chrono_now()[..10])?;
+        let old = self.db().playlist_tracks(pid)?;
         self.db().set_playlist_tracks(pid, &ids)?;
+        for (key, tid) in &taken {
+            self.db().meta_set(key, &tid.to_string())?;
+        }
+        // A row an earlier run of this import added and that is now off the playlist goes again
+        // when nothing was downloaded for it and no other playlist wants it.
+        for t in old.iter().filter(|t| !ids.contains(&t.id) && t.status == "wanted") {
+            let elsewhere = self.db().playlists_with_track(t.id)?;
+            if elsewhere.is_empty() {
+                self.db().delete_track(t.id)?;
+                info(tx, format!("dropped {} - {}: no longer on {}", t.artist, t.title, plan.name)).await?;
+            }
+        }
         info(tx, format!("{}: {} tracks; downloading what is missing", plan.name, ids.len())).await?;
         let before: Vec<i64> = self.db().playlist_tracks(pid)?.iter().filter(|t| !present(t)).map(|t| t.id).collect();
         // The usual download step (external libraries first, lyrics after), then this playlist.
-        let downloaded = self.sync(None, true, true, tx).await;
+        let downloaded = self.sync(None, true, true, Some(&ids), tx).await;
         self.publish_playlist(pid, tx).await?;
         let after = self.db().playlist_tracks(pid)?;
         let report = ImportReport {
@@ -491,6 +540,20 @@ impl App {
         );
         Ok(())
     }
+}
+
+/// For an album's playlist ("Album - Glava", "S.A.R.S. - Glava (2019)"): among candidates with the
+/// top one's title, those from a release named in the playlist title go first. A best-of carries
+/// the same songs as other recordings.
+fn prefer_named_release(cands: &mut [Candidate], playlist: &str) {
+    let Some(top) = cands.first().map(|c| norm(&c.title)) else { return };
+    let words = format!(" {} ", norm(playlist));
+    let named = |c: &Candidate| {
+        let a = norm(&c.album);
+        !a.is_empty() && norm(&c.title) == top && words.contains(&format!(" {a} "))
+    };
+    // Stable: the search's order holds within each group.
+    cands.sort_by_key(|c| !named(c));
 }
 
 /// yt-dlp's `--dump-json` for the link, boiled down.
@@ -581,6 +644,24 @@ pub fn judge(src: &Source, candidates: &[Candidate]) -> (bool, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn album_named_in_the_playlist_title_wins_ties() {
+        let c = |mbid: &str, title: &str, album: &str| Candidate {
+            mbid: mbid.into(),
+            title: title.into(),
+            artist: "S.A.R.S.".into(),
+            album: album.into(),
+            length_ms: None,
+        };
+        let mut v = vec![c("best-of", "Teško je", "10"), c("album", "Teško Je", "Glava"), c("other", "Lutka", "Glava")];
+        prefer_named_release(&mut v, "Album S.A.R.S. - Glava (2019)");
+        assert_eq!(v.iter().map(|c| c.mbid.as_str()).collect::<Vec<_>>(), ["album", "best-of", "other"]);
+        // "10" is not a word of the title even though "2010" holds the digits.
+        let mut w = vec![c("a", "X", "Glava"), c("b", "X", "10")];
+        prefer_named_release(&mut w, "Something 2010");
+        assert_eq!(w[0].mbid, "a");
+    }
 
     #[test]
     fn playlist_links_and_flat_entries() {

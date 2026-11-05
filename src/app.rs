@@ -104,7 +104,7 @@ impl App {
             Command::Daemon | Command::Tui => {
                 bail!("this command runs in the foreground; it cannot be sent to a running daemon")
             }
-            Command::Sync { playlist, no_push, no_fetch } => self.sync(playlist, no_push, no_fetch, tx).await,
+            Command::Sync { playlist, no_push, no_fetch } => self.sync(playlist, no_push, no_fetch, None, tx).await,
             Command::Tracks => {
                 let tracks = self.db().all_tracks()?;
                 data(tx, json!(tracks)).await
@@ -1350,11 +1350,13 @@ impl App {
         Ok(v)
     }
 
+    /// `tracks` limits the download step to those rows (an import fetches its own playlist only).
     pub(crate) async fn sync(
         &self,
         only: Option<String>,
         no_push: bool,
         no_fetch: bool,
+        tracks: Option<&[i64]>,
         tx: &Sender<Event>,
     ) -> Result<()> {
         let cfg = &self.config;
@@ -1398,7 +1400,10 @@ impl App {
         // External libraries first: what Lidarr has is not downloaded.
         self.external_scan(tx).await?;
         let external = self.db().external_all()?;
-        let wanted = self.db().wanted_tracks()?;
+        let mut wanted = self.db().wanted_tracks()?;
+        if let Some(ids) = tracks {
+            wanted.retain(|t| ids.contains(&t.id));
+        }
         info(tx, format!("{} tracks to download", wanted.len())).await?;
         let (mut done, mut failed, mut from_external) = (0, 0, 0);
         let mut done_ids = vec![];
