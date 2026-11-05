@@ -470,6 +470,14 @@ impl Bot {
                 p.picks.clear();
                 p.at = Some(0);
             }
+            "pla" => {
+                for e in p.plan.unsure().filter(|e| e.close && !e.candidates.is_empty()) {
+                    if !p.picks.iter().any(|(pos, _)| *pos == e.pos) {
+                        p.picks.push((e.pos, 0));
+                    }
+                }
+                p.at = None;
+            }
             "plc" | "pls" => {
                 let at = p.at.unwrap_or(0);
                 if kind == "plc"
@@ -502,7 +510,10 @@ impl Bot {
                     let len =
                         c.length_ms.map(|ms| format!(", {}:{:02}", ms / 60000, (ms / 1000) % 60)).unwrap_or_default();
                     lines.push(format!("{}. {} – {} ({}{len})", ci + 1, c.artist, c.title, c.album));
-                    row.push(json!({ "text": format!("🎵 {}", ci + 1), "callback_data": format!("plc:{mid}:{ci}") }));
+                    // A close match's first candidate is the one the fallback found: say yes to it.
+                    let label =
+                        if ci == 0 && e.close { "✅ That one".to_string() } else { format!("🎵 {}", ci + 1) };
+                    row.push(json!({ "text": label, "callback_data": format!("plc:{mid}:{ci}") }));
                 }
                 let skip = json!({ "text": "⏭ Skip", "callback_data": format!("pls:{mid}") });
                 (lines.join("\n"), json!([row, [skip, import]]))
@@ -511,8 +522,10 @@ impl Bot {
                 let new = plan.entries.iter().filter(|e| e.sure && !e.have).count();
                 let have = plan.entries.iter().filter(|e| e.sure && e.have).count();
                 let picked = if p.picks.is_empty() { String::new() } else { format!(", {} picked", p.picks.len()) };
+                let close = unsure.iter().filter(|e| e.close).count();
+                let close_txt = if close > 0 { format!(" ({close} close matches)") } else { String::new() };
                 let text = format!(
-                    "📃 {}: {} videos\n✅ {new} new, {have} already here, 🤔 {} unsure{picked}",
+                    "📃 {}: {} videos\n✅ {new} new, {have} already here, 🤔 {} unsure{close_txt}{picked}",
                     plan.name,
                     plan.entries.len(),
                     unsure.len()
@@ -521,6 +534,13 @@ impl Bot {
                 if !unsure.is_empty() {
                     row.push(
                         json!({ "text": format!("🔍 Review {}", unsure.len()), "callback_data": format!("plr:{mid}") }),
+                    );
+                }
+                let open_close =
+                    unsure.iter().filter(|e| e.close && !p.picks.iter().any(|(pos, _)| *pos == e.pos)).count();
+                if open_close > 0 {
+                    row.push(
+                        json!({ "text": format!("✅ Take {open_close} close"), "callback_data": format!("pla:{mid}") }),
                     );
                 }
                 row.push(json!({ "text": "✖ Cancel", "callback_data": format!("plx:{mid}") }));

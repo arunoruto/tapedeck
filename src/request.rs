@@ -177,8 +177,11 @@ impl App {
             Source { raw_title: input.to_string(), artist, title, ..Default::default() }
         };
         let length = if source.music { source.duration_ms } else { None };
-        let candidates = self.mb.search_candidates(&source.artist, &source.title, length).await?;
-        let (sure, reason) = judge(&source, &candidates);
+        let (candidates, rescued) = self.mb.search_candidates_or_primary(&source.artist, &source.title, length).await?;
+        let (sure, reason) = match rescued {
+            Some(note) => (false, note),
+            None => judge(&source, &candidates),
+        };
         let existing = match candidates.first() {
             Some(c) => self.db().track_by_mbid(&c.mbid)?.filter(present),
             None => None,
@@ -307,6 +310,9 @@ pub struct PlaylistEntry {
     pub candidates: Vec<Candidate>,
     pub sure: bool,
     pub reason: String,
+    /// Unsure, but a fallback (primary artist, the album's tracklist) found a likely match: the
+    /// top candidate, to confirm rather than look for.
+    pub close: bool,
     /// The library already has the top candidate.
     pub have: bool,
 }
@@ -387,20 +393,26 @@ impl App {
                     candidates: vec![c],
                     sure: true,
                     reason: "imported before".into(),
+                    close: false,
                     have,
                 });
                 continue;
             }
             let length = if source.music { source.duration_ms } else { None };
-            let mut candidates = match self.mb.search_candidates(&source.artist, &source.title, length).await {
-                Ok(c) => c,
-                Err(e) => {
-                    info(tx, format!("{pos}: musicbrainz: {e:#}")).await?;
-                    vec![]
-                }
-            };
+            let (mut candidates, rescued) =
+                match self.mb.search_candidates_or_primary(&source.artist, &source.title, length).await {
+                    Ok(c) => c,
+                    Err(e) => {
+                        info(tx, format!("{pos}: musicbrainz: {e:#}")).await?;
+                        (vec![], None)
+                    }
+                };
             prefer_named_release(&mut candidates, &name);
-            let (sure, reason) = judge(&source, &candidates);
+            let close = rescued.is_some();
+            let (sure, reason) = match rescued {
+                Some(note) => (false, note),
+                None => judge(&source, &candidates),
+            };
             let have = match candidates.first() {
                 Some(c) => {
                     let t = self.db().track_by_mbid(&c.mbid)?;
@@ -408,7 +420,7 @@ impl App {
                 }
                 None => false,
             };
-            entries.push(PlaylistEntry { pos, source, candidates, sure, reason, have });
+            entries.push(PlaylistEntry { pos, source, candidates, sure, reason, close, have });
         }
         let mut plan = PlaylistPlan { id, name, entries };
         // An album's playlist: what the search missed (a typo, an extra guest, a longer title)
@@ -419,7 +431,7 @@ impl App {
             for pos in album_fallback(&mut plan, &tracks) {
                 let e = &mut plan.entries[pos];
                 let t = self.db().track_by_mbid(&e.candidates[0].mbid)?;
-                e.have = e.sure && t.filter(present).is_some();
+                e.have = t.filter(present).is_some();
             }
         }
         Ok(plan)
@@ -615,9 +627,9 @@ fn edits(a: &str, b: &str) -> usize {
     row[b.len()]
 }
 
-/// Unsure entries against the album's tracklist at the same position: a similar title and a
-/// fitting length make it sure; one of the two offers the track as the first candidate. Returns
-/// the indexes of the entries it touched.
+/// Unsure entries against the album's tracklist at the same position: when the title is similar
+/// or the length fits, the track becomes the first candidate and the entry a close match, asked
+/// about rather than taken. Returns the indexes of the entries it touched.
 fn album_fallback(plan: &mut PlaylistPlan, tracks: &[Candidate]) -> Vec<usize> {
     let mut touched = vec![];
     for (i, e) in plan.entries.iter_mut().enumerate().filter(|(_, e)| !e.sure) {
@@ -632,15 +644,17 @@ fn album_fallback(plan: &mut PlaylistPlan, tracks: &[Candidate]) -> Vec<usize> {
         if !(title_ok || len_ok) {
             continue;
         }
-        let what = format!("track {} of {}", e.pos, t.album);
+        let secs = |ms: Option<i64>| ms.map_or("?".to_string(), |ms| format!("{}s", ms / 1000));
+        let lens = format!("{} vs {}", secs(e.source.duration_ms), secs(t.length_ms));
+        let why = match (title_ok, len_ok) {
+            (true, true) => format!("YouTube {:?} ≈ {:?}", e.source.title, t.title),
+            (true, false) => format!("similar title {:?}, but the length is off", t.title),
+            _ => format!("the length fits, but it is called {:?}", t.title),
+        };
+        e.reason = format!("close match: {why} ({} #{}, {lens})", t.album, e.pos);
+        e.close = true;
         e.candidates.retain(|c| c.mbid != t.mbid);
         e.candidates.insert(0, t.clone());
-        if title_ok && len_ok {
-            e.sure = true;
-            e.reason = what;
-        } else {
-            e.reason = format!("{}; {what} is {:?}", e.reason, t.title);
-        }
         touched.push(i);
     }
     touched
@@ -767,6 +781,7 @@ mod tests {
             candidates: vec![],
             sure: false,
             reason: "no MusicBrainz match".into(),
+            close: false,
             have: false,
         };
         let mut plan = PlaylistPlan {
@@ -779,9 +794,12 @@ mod tests {
             ],
         };
         assert_eq!(album_fallback(&mut plan, &tracks), vec![0, 1]);
-        assert!(plan.entries[0].sure && plan.entries[0].candidates[0].mbid == "t2");
-        assert!(plan.entries[1].sure && plan.entries[1].candidates[0].mbid == "t4");
-        assert!(!plan.entries[2].sure && plan.entries[2].candidates.is_empty(), "neither title nor length fits");
+        // Found, but asked about: never taken without a yes.
+        assert!(!plan.entries[0].sure && plan.entries[0].close && plan.entries[0].candidates[0].mbid == "t2");
+        assert!(!plan.entries[1].sure && plan.entries[1].close && plan.entries[1].candidates[0].mbid == "t4");
+        assert!(plan.entries[1].reason.starts_with("close match: YouTube"), "{}", plan.entries[1].reason);
+        assert!(plan.entries[1].reason.contains("(Poslednji Album #4, 174s vs 173s)"), "{}", plan.entries[1].reason);
+        assert!(!plan.entries[2].close && plan.entries[2].candidates.is_empty(), "neither title nor length fits");
         assert!(similar_title("Razguliana", "Razgulijana"));
         assert!(!similar_title("Lutka", "Glava"));
         assert!(named_in("Poslednji Album", &plan.name));

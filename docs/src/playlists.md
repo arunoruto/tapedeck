@@ -34,7 +34,11 @@ td import "https://www.youtube.com/playlist?list=PL…" --apply --also 4,9   # a
 
 An entry is sure when title, artist and version match its MusicBrainz recording and the
 uploader is the artist, a label or Topic channel, or the playlist's own curator. Everything
-else is listed with the reason. What an external library (Lidarr) already has is not
+else is listed with the reason. Close matches are asked about too, never taken on their own:
+an entry found only under the primary artist ("S.A.R.S." for "S.A.R.S. & Ničim izazvan"),
+or, for an album's playlist, the album track at the same position with a similar title or a
+fitting length ("Razguliana" ≈ "Razgulijana", track 7). Their note says why, and `--also`
+takes the match it found. What an external library (Lidarr) already has is not
 downloaded. Mixes (`RD…` lists, which YouTube makes up as you go) and private lists (liked
 music, watch later; they need a signed-in account) are refused; unlisted playlists work.
 

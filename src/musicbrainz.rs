@@ -84,14 +84,27 @@ impl MusicBrainz {
     pub async fn search_candidates(&self, artist: &str, title: &str, length_ms: Option<i64>) -> Result<Vec<Candidate>> {
         let title = strip_feat(title);
         let v = self.search(artist, &title).await?;
-        let hits = search_candidates_from(&v, artist, &title, length_ms);
-        // "S.A.R.S. & Ničim izazvan" finds nothing when MusicBrainz credits S.A.R.S. alone.
+        Ok(search_candidates_from(&v, artist, &title, length_ms))
+    }
+
+    /// `search_candidates`, and when that finds nothing for a joined credit, the primary artist
+    /// alone ("S.A.R.S. & Ničim izazvan" → "S.A.R.S."). The second value says when the retry
+    /// found them: a close match to ask about, not one to take.
+    pub async fn search_candidates_or_primary(
+        &self,
+        artist: &str,
+        title: &str,
+        length_ms: Option<i64>,
+    ) -> Result<(Vec<Candidate>, Option<String>)> {
+        let hits = self.search_candidates(artist, title, length_ms).await?;
         let primary = crate::lyrics::primary_artist(artist);
         if hits.is_empty() && !primary.is_empty() && primary != artist {
-            let v = self.search(&primary, &title).await?;
-            return Ok(search_candidates_from(&v, &primary, &title, length_ms));
+            let hits = self.search_candidates(&primary, title, length_ms).await?;
+            let note =
+                (!hits.is_empty()).then(|| format!("close match: found under {primary:?} alone, not {artist:?}"));
+            return Ok((hits, note));
         }
-        Ok(hits)
+        Ok((hits, None))
     }
 
     /// A release's tracks in order over all its media, as candidates (index = position - 1).
