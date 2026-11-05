@@ -163,10 +163,14 @@ pub fn file_secs(path: &Path) -> Option<f64> {
 }
 
 fn pick_closest(hits: &[Value], want_ms: Option<i64>) -> Result<&Value> {
+    // YouTube's plain search sometimes answers nothing at all (seen for "S.A.R.S. - Lutka").
+    ensure!(!hits.is_empty(), "the plain YouTube search found nothing");
     let Some(want) = want_ms.map(|ms| ms as f64 / 1000.0) else { return Ok(&hits[0]) };
     let drift = |h: &Value| h["duration"].as_f64().map(|d| (d - want).abs());
-    let best =
-        hits.iter().min_by(|a, b| drift(a).unwrap_or(f64::MAX).total_cmp(&drift(b).unwrap_or(f64::MAX))).unwrap();
+    let Some(best) = hits.iter().min_by(|a, b| drift(a).unwrap_or(f64::MAX).total_cmp(&drift(b).unwrap_or(f64::MAX)))
+    else {
+        unreachable!("hits is not empty")
+    };
     match drift(best) {
         Some(d) if d > max_drift(want) => bail!(
             "closest search hit {:?} is {d:.0}s off the {want:.0}s recording; set a URL with `td source`",
@@ -228,6 +232,8 @@ mod tests {
         // A 16 s longer video cut of a 285 s song is past max(10 s, 5 %).
         assert!(pick_closest(&hits[..1], Some(285_000)).is_err());
         assert!(pick_closest(&hits[..1], Some(292_000)).is_ok());
+        assert!(pick_closest(&[], Some(240_000)).is_err(), "no hits is an error, not a panic");
+        assert!(pick_closest(&[], None).is_err());
     }
 
     #[test]

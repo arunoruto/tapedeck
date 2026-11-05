@@ -85,9 +85,24 @@ pub async fn run(app: Arc<App>, token: String, allowed: Vec<i64>) -> Result<()> 
             offset = offset.max(u["update_id"].as_i64().unwrap_or(0) + 1);
             let bot = bot.clone();
             let u = u.clone();
+            // The chat to tell when handling this update crashes, so a progress message is not
+            // left hanging without a word.
+            let chat = u["message"]["chat"]["id"].as_i64().or(u["callback_query"]["message"]["chat"]["id"].as_i64());
             tokio::spawn(async move {
-                if let Err(e) = bot.handle(u).await {
-                    tracing::warn!("telegram: {e:#}");
+                let job = tokio::spawn({
+                    let bot = bot.clone();
+                    async move { bot.handle(u).await }
+                });
+                match job.await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => tracing::warn!("telegram: {e:#}"),
+                    Err(e) => {
+                        tracing::error!("telegram: handler crashed: {e}");
+                        if let Some(chat) = chat {
+                            let msg = "⚠️ That crashed on my side (the daemon log has the details). Nothing half-done is kept open; send it again.";
+                            let _ = bot.send(chat, msg, None, None).await;
+                        }
+                    }
                 }
             });
         }
