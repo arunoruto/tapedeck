@@ -111,15 +111,20 @@ pub async fn run(app: Arc<App>, token: String, allowed: Vec<i64>) -> Result<()> 
 
 impl Bot {
     async fn call(&self, method: &str, body: Value) -> Result<Value> {
+        // The token is part of the URL (`/bot<token>/`), and reqwest puts the URL into its
+        // errors: drop it, or a network outage writes the token into the journal.
         let v: Value = self
             .http
             .post(format!("{}/{method}", self.api))
             .json(&body)
             .send()
             .await
+            .map_err(reqwest::Error::without_url)
             .with_context(|| format!("telegram {method}"))?
             .json()
-            .await?;
+            .await
+            .map_err(reqwest::Error::without_url)
+            .with_context(|| format!("telegram {method} answer"))?;
         if v["ok"] != true {
             anyhow::bail!("telegram {method}: {}", v["description"].as_str().unwrap_or("error"));
         }
@@ -595,6 +600,19 @@ fn import_summary(name: &str, r: &ImportReport, targets: &[&str]) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// What `call` does with a failed request: the error must not carry the URL (the token).
+    #[tokio::test]
+    async fn request_errors_leave_the_token_out() {
+        let err = reqwest::Client::new()
+            .post("http://127.0.0.1:9/botSECRET-TOKEN/getUpdates")
+            .send()
+            .await
+            .map_err(reqwest::Error::without_url)
+            .unwrap_err();
+        let shown = format!("{:#}", anyhow::Error::from(err).context("telegram getUpdates"));
+        assert!(!shown.contains("SECRET-TOKEN"), "{shown}");
+    }
+
     #[test]
     fn import_summary_lists_failures() {
         let r = super::ImportReport { tracks: 10, downloaded: 8, failed: vec!["A - x".into(), "B - y".into()] };

@@ -84,7 +84,20 @@ impl MusicBrainz {
     pub async fn search_candidates(&self, artist: &str, title: &str, length_ms: Option<i64>) -> Result<Vec<Candidate>> {
         let title = strip_feat(title);
         let v = self.search(artist, &title).await?;
-        Ok(search_candidates_from(&v, artist, &title, length_ms))
+        let hits = search_candidates_from(&v, artist, &title, length_ms);
+        // "S.A.R.S. & Ničim izazvan" finds nothing when MusicBrainz credits S.A.R.S. alone.
+        let primary = crate::lyrics::primary_artist(artist);
+        if hits.is_empty() && !primary.is_empty() && primary != artist {
+            let v = self.search(&primary, &title).await?;
+            return Ok(search_candidates_from(&v, &primary, &title, length_ms));
+        }
+        Ok(hits)
+    }
+
+    /// A release's tracks in order over all its media, as candidates (index = position - 1).
+    pub async fn release_tracks(&self, mbid: &str) -> Result<Vec<Candidate>> {
+        let url = format!("{API}/release/{mbid}?inc=recordings+artist-credits&fmt=json");
+        Ok(release_tracks_from(&self.get(&url, &format!("release {mbid}")).await?))
     }
 
     async fn search(&self, artist: &str, title: &str) -> Result<Value> {
@@ -174,6 +187,27 @@ fn norm(title: &str) -> String {
 pub fn version_words(title: &str) -> Vec<&'static str> {
     let lower = title.to_lowercase();
     VERSION_WORDS.iter().copied().filter(|w| lower.split(|c: char| !c.is_alphanumeric()).any(|tok| tok == *w)).collect()
+}
+
+fn release_tracks_from(v: &Value) -> Vec<Candidate> {
+    let album = v["title"].as_str().unwrap_or("").to_string();
+    v["media"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .flat_map(|m| m["tracks"].as_array().into_iter().flatten())
+        .filter_map(|t| {
+            let rec = &t["recording"];
+            let credit = if t["artist-credit"].is_array() { &t["artist-credit"] } else { &rec["artist-credit"] };
+            Some(Candidate {
+                mbid: rec["id"].as_str()?.to_string(),
+                title: t["title"].as_str().or(rec["title"].as_str()).unwrap_or("").to_string(),
+                artist: credit_with(credit, |c| c["name"].as_str()).0,
+                album: album.clone(),
+                length_ms: t["length"].as_i64().or(rec["length"].as_i64()),
+            })
+        })
+        .collect()
 }
 
 /// A search hit, enough to show someone and ask.
@@ -478,6 +512,19 @@ mod tests {
         let ids: Vec<&str> =
             rank_search_hits(&v, "a-ha", "The Blue Sky", None).iter().filter_map(|r| r["id"].as_str()).collect();
         assert_eq!(ids, ["u2010"]);
+    }
+
+    #[test]
+    fn release_tracks_run_over_all_media() {
+        let t = |id: &str, title: &str, len: i64| json!({"title": title, "length": len, "recording": {"id": id, "title": title}, "artist-credit": [{"name": "S.A.R.S.", "artist": {"id": "s"}}]});
+        let v = json!({"title": "Poslednji Album", "media": [{"tracks": [t("a", "Uvod", 60_000)]}, {"tracks": [t("b", "Glupost", 202_000)]}]});
+        let tracks = release_tracks_from(&v);
+        assert_eq!(tracks.len(), 2);
+        assert_eq!(
+            (tracks[1].mbid.as_str(), tracks[1].title.as_str(), tracks[1].album.as_str(), tracks[1].length_ms),
+            ("b", "Glupost", "Poslednji Album", Some(202_000))
+        );
+        assert_eq!(tracks[1].artist, "S.A.R.S.");
     }
 
     #[test]

@@ -410,7 +410,48 @@ impl App {
             };
             entries.push(PlaylistEntry { pos, source, candidates, sure, reason, have });
         }
-        Ok(PlaylistPlan { id, name, entries })
+        let mut plan = PlaylistPlan { id, name, entries };
+        // An album's playlist: what the search missed (a typo, an extra guest, a longer title)
+        // is looked up in the album's own tracklist by position.
+        if plan.unsure().next().is_some()
+            && let Some(tracks) = self.named_release_tracks(&plan, tx).await?
+        {
+            for pos in album_fallback(&mut plan, &tracks) {
+                let e = &mut plan.entries[pos];
+                let t = self.db().track_by_mbid(&e.candidates[0].mbid)?;
+                e.have = e.sure && t.filter(present).is_some();
+            }
+        }
+        Ok(plan)
+    }
+
+    /// The tracklist of the release a playlist is named after, found through a sure entry whose
+    /// recording sits on it. `None` when no entry leads there.
+    async fn named_release_tracks(&self, plan: &PlaylistPlan, tx: &Sender<Event>) -> Result<Option<Vec<Candidate>>> {
+        let lead = plan
+            .entries
+            .iter()
+            .filter(|e| e.sure)
+            .filter_map(|e| e.candidates.first())
+            .find(|c| named_in(&c.album, &plan.name));
+        let Some(c) = lead else { return Ok(None) };
+        let r = match self.mb.recording(&c.mbid).await {
+            Ok(r) => r,
+            Err(e) => {
+                info(tx, format!("album lookup: {e:#}")).await?;
+                return Ok(None);
+            }
+        };
+        if !named_in(&r.album, &plan.name) {
+            return Ok(None);
+        }
+        match self.mb.release_tracks(&r.album_mbid).await {
+            Ok(t) => Ok(Some(t)),
+            Err(e) => {
+                info(tx, format!("album lookup: {e:#}")).await?;
+                Ok(None)
+            }
+        }
     }
 
     /// Import a plan: the sure entries' top match plus `picks` (position, candidate index) for
@@ -542,16 +583,75 @@ impl App {
     }
 }
 
+/// The release title as whole words of the playlist title ("Glava" in "Album S.A.R.S. - Glava (2019)").
+fn named_in(album: &str, playlist: &str) -> bool {
+    let a = norm(album);
+    !a.is_empty() && format!(" {} ", norm(playlist)).contains(&format!(" {a} "))
+}
+
+/// Close enough to be the same title: equal, one the other's start ("U se, na se, poda se" /
+/// "U Se Na Se"), or a typo apart ("Razguliana" / "Razgulijana").
+fn similar_title(a: &str, b: &str) -> bool {
+    let (a, b) = (norm(&strip_feat(a)), norm(&strip_feat(b)));
+    let short = a.len().min(b.len());
+    a == b
+        || (short >= 4 && (a.starts_with(&b) || b.starts_with(&a)))
+        || edits(&a, &b) <= (a.len().max(b.len()) / 8).max(1)
+}
+
+/// Levenshtein distance over chars.
+fn edits(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut prev = row[0];
+        row[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let cur = row[j + 1];
+            row[j + 1] = (prev + usize::from(ca != *cb)).min(row[j] + 1).min(cur + 1);
+            prev = cur;
+        }
+    }
+    row[b.len()]
+}
+
+/// Unsure entries against the album's tracklist at the same position: a similar title and a
+/// fitting length make it sure; one of the two offers the track as the first candidate. Returns
+/// the indexes of the entries it touched.
+fn album_fallback(plan: &mut PlaylistPlan, tracks: &[Candidate]) -> Vec<usize> {
+    let mut touched = vec![];
+    for (i, e) in plan.entries.iter_mut().enumerate().filter(|(_, e)| !e.sure) {
+        let Some(t) = e.pos.checked_sub(1).and_then(|p| tracks.get(p)) else { continue };
+        let title_ok = similar_title(&e.source.title, &t.title);
+        let len_ok = match (e.source.duration_ms, t.length_ms) {
+            (Some(a), Some(b)) => {
+                ((a - b).abs() as f64) <= crate::download::ytdlp::max_drift(b as f64 / 1000.0) * 1000.0
+            }
+            _ => false,
+        };
+        if !(title_ok || len_ok) {
+            continue;
+        }
+        let what = format!("track {} of {}", e.pos, t.album);
+        e.candidates.retain(|c| c.mbid != t.mbid);
+        e.candidates.insert(0, t.clone());
+        if title_ok && len_ok {
+            e.sure = true;
+            e.reason = what;
+        } else {
+            e.reason = format!("{}; {what} is {:?}", e.reason, t.title);
+        }
+        touched.push(i);
+    }
+    touched
+}
+
 /// For an album's playlist ("Album - Glava", "S.A.R.S. - Glava (2019)"): among candidates with the
 /// top one's title, those from a release named in the playlist title go first. A best-of carries
 /// the same songs as other recordings.
 fn prefer_named_release(cands: &mut [Candidate], playlist: &str) {
     let Some(top) = cands.first().map(|c| norm(&c.title)) else { return };
-    let words = format!(" {} ", norm(playlist));
-    let named = |c: &Candidate| {
-        let a = norm(&c.album);
-        !a.is_empty() && norm(&c.title) == top && words.contains(&format!(" {a} "))
-    };
+    let named = |c: &Candidate| norm(&c.title) == top && named_in(&c.album, playlist);
     // Stable: the search's order holds within each group.
     cands.sort_by_key(|c| !named(c));
 }
@@ -644,6 +744,48 @@ pub fn judge(src: &Source, candidates: &[Candidate]) -> (bool, String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn album_tracklist_catches_what_the_search_missed() {
+        let track = |mbid: &str, title: &str, len: i64| Candidate {
+            mbid: mbid.into(),
+            title: title.into(),
+            artist: "S.A.R.S.".into(),
+            album: "Poslednji Album".into(),
+            length_ms: Some(len),
+        };
+        let tracks = vec![
+            track("t1", "Prva", 180_000),
+            track("t2", "Glupost", 202_000),
+            track("t3", "Treća", 190_000),
+            track("t4", "U Se Na Se", 173_000),
+            track("t5", "Peta", 200_000),
+        ];
+        let entry = |pos: usize, title: &str, secs: i64| PlaylistEntry {
+            pos,
+            source: Source { title: title.into(), duration_ms: Some(secs * 1000), ..Default::default() },
+            candidates: vec![],
+            sure: false,
+            reason: "no MusicBrainz match".into(),
+            have: false,
+        };
+        let mut plan = PlaylistPlan {
+            id: "PL".into(),
+            name: "Album S.A.R.S. - \"Poslednji album\" (2016)".into(),
+            entries: vec![
+                entry(2, "Glupost", 203),
+                entry(4, "U se, na se, poda se (feat Kandžija)", 174),
+                entry(5, "Nešto drugo", 320),
+            ],
+        };
+        assert_eq!(album_fallback(&mut plan, &tracks), vec![0, 1]);
+        assert!(plan.entries[0].sure && plan.entries[0].candidates[0].mbid == "t2");
+        assert!(plan.entries[1].sure && plan.entries[1].candidates[0].mbid == "t4");
+        assert!(!plan.entries[2].sure && plan.entries[2].candidates.is_empty(), "neither title nor length fits");
+        assert!(similar_title("Razguliana", "Razgulijana"));
+        assert!(!similar_title("Lutka", "Glava"));
+        assert!(named_in("Poslednji Album", &plan.name));
+    }
 
     #[test]
     fn album_named_in_the_playlist_title_wins_ties() {
