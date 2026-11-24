@@ -386,8 +386,7 @@ async fn stream(s: &Server, p: &Params, req: Request) -> Response {
         Ok(None) => return envelope(&fmt, &who, Err(Error::not_found("no such song"))),
         Err(e) => return envelope(&fmt, &who, Err(e)),
     };
-    match ServeFile::new(&file).oneshot(req).await {
-        Ok(res) => res.into_response(),
-        Err(e) => envelope(&fmt, &who, Err(Error::internal(e))),
-    }
+    // ServeFile cannot fail (its error is Infallible); missing files are a 404 response.
+    let Ok(res) = ServeFile::new(&file).oneshot(req).await;
+    res.into_response()
 }
