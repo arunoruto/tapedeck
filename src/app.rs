@@ -346,15 +346,10 @@ impl App {
                 ensure!(!self.config.external.paths.is_empty(), "no external.paths configured");
                 self.external_dedupe(dry_run, tx).await
             }
-            Command::Import { dir, apply, also, as_is, as_is_all, no_playlist, playlist, .. }
+            Command::Import { dir, apply, also, as_is, as_is_all, group, .. }
                 if dir.to_string_lossy().starts_with("http") =>
             {
-                let shape = match (no_playlist, playlist) {
-                    (true, _) => Some(true),
-                    (_, true) => Some(false),
-                    _ => None,
-                };
-                self.import_playlist(&dir.to_string_lossy(), apply, &also, &as_is, as_is_all, shape, tx).await
+                self.import_playlist(&dir.to_string_lossy(), apply, &also, &as_is, as_is_all, group, tx).await
             }
             Command::Import { dir, apply, r#move, copy: _, delete_duplicates, .. } => {
                 self.import(&dir, apply, !r#move, delete_duplicates, tx).await

@@ -19,6 +19,7 @@ use tokio::sync::mpsc::Sender;
 use crate::{
     App, Event,
     app::{display_name, info, new_track, progress_at},
+    cli::Group,
     db::Track,
     external::{chrono_now, find_external, present},
     library,
@@ -329,8 +330,8 @@ pub struct PlaylistPlan {
     pub id: String,
     pub name: String,
     pub entries: Vec<PlaylistEntry>,
-    /// The link is an album (a YouTube Music album list, or named after the release its songs
-    /// are on): its tracks go into the library, no playlist is made.
+    /// The link looks like an album (a YouTube Music album list, or named after the release its
+    /// songs are on): a hint for choosing how to group it, never a decision.
     pub album: bool,
 }
 
@@ -348,24 +349,15 @@ impl PlaylistPlan {
     pub fn unsure(&self) -> impl Iterator<Item = &PlaylistEntry> {
         self.entries.iter().filter(|e| !e.sure)
     }
-
-    /// Album or playlist, unless told: an album link is one, and so is a playlist taken mostly
-    /// as is (a soundtrack nobody catalogued).
-    pub fn as_album(&self, picks: &[(usize, Pick)]) -> bool {
-        let taken = self.entries.iter().filter(|e| e.sure).count() + picks.len();
-        let as_is = picks.iter().filter(|(_, p)| *p == Pick::AsIs).count();
-        self.album || (as_is > 0 && as_is * 2 >= taken)
-    }
 }
 
-/// How an import went: tracks taken, downloads, the failures by name, and whether it went in as
-/// an album (no playlist).
+/// How an import went: tracks taken, downloads, the failures by name, and how they were grouped.
 #[derive(Debug, Default)]
 pub struct ImportReport {
     pub tracks: usize,
     pub downloaded: usize,
     pub failed: Vec<String>,
-    pub album: bool,
+    pub group: Group,
 }
 
 impl App {
@@ -451,8 +443,10 @@ impl App {
             };
             entries.push(PlaylistEntry { pos, source, candidates, sure, reason, close, have });
         }
-        let named =
-            entries.iter().filter(|e| e.sure && e.candidates.first().is_some_and(|c| named_in(&c.album, &name)));
+        // Songs taken as is earlier carry the playlist's own name as album: no evidence.
+        let named = entries.iter().filter(|e| {
+            e.sure && e.candidates.first().is_some_and(|c| library::is_uuid(&c.mbid) && named_in(&c.album, &name))
+        });
         let (named, sure) = (named.count(), entries.iter().filter(|e| e.sure).count());
         let album = id.starts_with("OLAK5uy_") || (named > 0 && named * 2 >= sure);
         let mut plan = PlaylistPlan { id, name, entries, album };
@@ -500,13 +494,14 @@ impl App {
     }
 
     /// Import a plan: the sure entries' top match plus `picks` for unsure ones; download what is
-    /// missing. As a playlist (YouTube's order, written and pushed) or, `as_album`, only into the
-    /// library; an album imported as a playlist before loses that playlist (backed up first).
+    /// missing. The songs always come into the library; `group` says whether they also form a
+    /// playlist (YouTube's order, written and pushed). Imported as a playlist before and grouped
+    /// otherwise now, that playlist goes (backed up first) and the songs stay.
     pub(crate) async fn apply_playlist(
         &self,
         plan: &PlaylistPlan,
         picks: &[(usize, Pick)],
-        as_album: bool,
+        group: Group,
         tx: &Sender<Event>,
     ) -> Result<ImportReport> {
         // Taken as is, the songs share one album; its artist is theirs when they agree.
@@ -533,8 +528,8 @@ impl App {
                     match existing {
                         Some(t) => t.id,
                         None => {
-                            let id =
-                                self.db().insert_track(&new_track(&mbid, &as_is_recording(e, plan, &album_artist)))?;
+                            let r = as_is_recording(e, plan, &album_artist, group);
+                            let id = self.db().insert_track(&new_track(&mbid, &r))?;
                             self.db().set_source_url(id, url)?;
                             id
                         }
@@ -572,14 +567,14 @@ impl App {
             Some(p) => self.db().playlist_tracks(p.id)?,
             None => vec![],
         };
-        let pid = match (as_album, &earlier) {
-            (true, Some(p)) => {
-                info(tx, format!("{} is an album: its playlist goes, the tracks stay", plan.name)).await?;
+        let pid = match (group, &earlier) {
+            (Group::Album | Group::None, Some(p)) => {
+                info(tx, format!("{}: no playlist this time; the earlier one goes, the songs stay", plan.name)).await?;
                 self.drop_playlist(p, tx).await?;
                 None
             }
-            (true, None) => None,
-            (false, _) => {
+            (Group::Album | Group::None, None) => None,
+            (Group::Playlist, _) => {
                 let pid = self.db().upsert_playlist(&kind, &plan.name, &kind, &chrono_now()[..10])?;
                 self.db().set_playlist_tracks(pid, &ids)?;
                 Some(pid)
@@ -607,7 +602,7 @@ impl App {
         if let Some(pid) = pid {
             self.publish_playlist(pid, tx).await?;
         }
-        let mut report = ImportReport { tracks: ids.len(), album: as_album, ..Default::default() };
+        let mut report = ImportReport { tracks: ids.len(), group, ..Default::default() };
         for id in &before {
             let t = self.db().track_by_id(*id)?;
             match t {
@@ -627,7 +622,7 @@ impl App {
 
     /// `td import <link>`: the dry run, or with `apply` the import. `also` takes the top match
     /// of those unsure positions, `as_is` the video itself for those (all unmatched with
-    /// `as_is_all`); `as_album` overrides whether a playlist is made.
+    /// `as_is_all`); `group` is how the songs are grouped.
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn import_playlist(
         &self,
@@ -636,7 +631,7 @@ impl App {
         also: &[usize],
         as_is: &[usize],
         as_is_all: bool,
-        as_album: Option<bool>,
+        group: Group,
         tx: &Sender<Event>,
     ) -> Result<()> {
         let plan = self.analyze_playlist(url, tx).await?;
@@ -672,28 +667,28 @@ impl App {
             })
             .collect();
         tx.send(Event::Data { data: json!(rows) }).await.context("client went away")?;
-        let album = as_album.unwrap_or_else(|| plan.as_album(&picks));
         let asks = rows.iter().filter(|r| r["status"] == "ask").count();
         let unmatched = plan.unsure().filter(|e| e.candidates.is_empty()).count();
         if !apply {
-            let shape = if album {
-                format!("only the songs, no playlist: it looks like an album (--playlist creates {:?})", plan.name)
-            } else {
-                format!("and the playlist {:?} (--no-playlist for only the songs)", plan.name)
+            let shape = match group {
+                Group::Playlist => format!("as the playlist {:?}", plan.name),
+                Group::Album => "as an album, no playlist".to_string(),
+                Group::None => "ungrouped, no playlist".to_string(),
             };
+            let hint = if plan.album && group == Group::Playlist { ", it looks like an album" } else { "" };
+            let shape = format!("{shape} (--group playlist|album|none{hint})");
             let mut msg = format!("{} to take, {asks} unsure, {shape}; --apply imports", rows.len() - asks);
             if asks > 0 {
                 msg.push_str(", --also N,M takes the top match of unsure ones");
             }
             if unmatched > 0 {
                 msg.push_str(&format!(
-                    ", --as-is N,M (or --as-is-all for the {unmatched} without a match) takes the video itself, filed as the album {:?}",
-                    plan.name
+                    ", --as-is N,M (or --as-is-all for the {unmatched} without a match) takes the video itself"
                 ));
             }
             return info(tx, msg).await;
         }
-        let r = self.apply_playlist(&plan, &picks, album, tx).await?;
+        let r = self.apply_playlist(&plan, &picks, group, tx).await?;
         ensure!(
             r.failed.is_empty(),
             "{} of {} downloads failed: {}; `td retry` queues them again",
@@ -805,10 +800,24 @@ fn source_from_video(url: &str, v: &Value) -> Source {
     }
 }
 
-/// A playlist entry taken as is: tagged from the video, filed as track N of an album named after
-/// the playlist (no year: one folder for all of it).
-fn as_is_recording(e: &PlaylistEntry, plan: &PlaylistPlan, album_artist: &str) -> Recording {
+/// A playlist entry taken as is, tagged from the video: track N of an album named after the
+/// playlist (no year: one folder for all of it), or with `Group::None` a single of its own.
+fn as_is_recording(e: &PlaylistEntry, plan: &PlaylistPlan, album_artist: &str, group: Group) -> Recording {
     let artist = if e.source.artist.is_empty() { album_artist.to_string() } else { e.source.artist.clone() };
+    if group == Group::None {
+        return Recording {
+            title: e.source.title.clone(),
+            artist: artist.clone(),
+            artist_mbid: None,
+            album_artist_mbid: format!("youtube:{}", norm(&artist).replace(' ', "-")),
+            album_artist: artist,
+            album: e.source.title.clone(),
+            album_mbid: format!("youtube:{}", e.source.video_id.clone().unwrap_or_default()),
+            year: e.source.year,
+            track_no: None,
+            length_ms: e.source.duration_ms,
+        };
+    }
     Recording {
         title: e.source.title.clone(),
         artist,
@@ -935,7 +944,7 @@ mod tests {
     }
 
     #[test]
-    fn soundtrack_taken_as_is_is_an_album_of_its_own() {
+    fn taken_as_is_tags_follow_the_grouping() {
         let entry = |pos: usize, title: &str, sure: bool| PlaylistEntry {
             pos,
             source: Source {
@@ -958,14 +967,17 @@ mod tests {
             entries: vec![entry(1, "Me Pica El Ano", false), entry(2, "Wrong Pill", false), entry(3, "Hit", true)],
             album: false,
         };
-        assert!(!plan.as_album(&[]), "a playlist stays one");
-        assert!(plan.as_album(&[(1, Pick::AsIs), (2, Pick::AsIs)]), "mostly as is: a soundtrack, so an album");
-        assert!(!plan.as_album(&[(1, Pick::AsIs), (2, Pick::Candidate(0))]));
-        let r = as_is_recording(&plan.entries[1], &plan, "One More Lawn (Radio)");
+        let r = as_is_recording(&plan.entries[1], &plan, "One More Lawn (Radio)", Group::Album);
         assert_eq!((r.album.as_str(), r.track_no, r.year), ("One More Lawn - Full Radio (All Songs)", Some(2), None));
         assert_eq!(
             (r.title.as_str(), r.artist.as_str(), r.album_mbid.as_str()),
             ("Wrong Pill", "One More Lawn (Radio)", "youtube:PLJ19oo9w4X5A")
+        );
+        // Ungrouped: a single of its own.
+        let single = as_is_recording(&plan.entries[1], &plan, "One More Lawn (Radio)", Group::None);
+        assert_eq!(
+            (single.album.as_str(), single.album_mbid.as_str(), single.track_no),
+            ("Wrong Pill", "youtube:v2", None)
         );
     }
 

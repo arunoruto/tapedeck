@@ -21,13 +21,17 @@ request is, then downloaded through the normal path, YouTube Music's song first,
 checked. So a playlist of music videos still ends up as album audio without the intros and
 skits.
 
-Whether tapedeck also creates the playlist is your call. An album's link (a YouTube Music
-album list `OLAK5uy_…`, or a playlist named after the release its songs are on) brings only
-the songs by default; anything else also becomes a playlist with its YouTube title and order,
-its own m3u8 (`youtube-<list id>.m3u8`), pushed like any other. `--playlist` and
-`--no-playlist` decide, and the dry run says which it would do. Importing a link again
-without a playlist removes the one an earlier import made (backed up on the targets first);
-the songs stay. Running it again later also picks up
+The songs always come into the library; how they are grouped is your call with `--group`:
+
+- `playlist` (the default): a playlist with its YouTube title and order, its own m3u8
+  (`youtube-<list id>.m3u8`), pushed like any other.
+- `album`: no playlist. Songs taken as is (below) form one album named after the playlist.
+- `none`: no playlist. Songs taken as is are singles.
+
+Songs matched on MusicBrainz keep their own album either way. The dry run says when a link
+looks like an album (a YouTube Music album list `OLAK5uy_…`, or a playlist named after the
+release its songs are on), a hint only. Importing a link again with `album` or `none` removes
+the playlist an earlier import made (backed up on the targets first); the songs stay. Running it again later also picks up
 new entries; a video imported before keeps the recording it got then, and a row an earlier
 run added that is no longer on the playlist (and was never downloaded) is dropped. An import
 downloads its own playlist only, not the rest of the queue. For an album's playlist, a
@@ -37,15 +41,14 @@ recording from the release the playlist is named after wins over the same song o
 td import "https://www.youtube.com/playlist?list=PL…"            # dry run: what matches, what is unsure
 td import "https://www.youtube.com/playlist?list=PL…" --apply    # import the sure ones
 td import "https://www.youtube.com/playlist?list=PL…" --apply --also 4,9   # and the top match of 4 and 9
-td import "https://www.youtube.com/playlist?list=OLAK5uy_…" --apply --playlist   # an album, but as a playlist too
+td import "https://www.youtube.com/playlist?list=OLAK5uy_…" --apply --group album   # only the songs
 ```
 
 Music MusicBrainz doesn't know (a game's soundtrack, a small artist's uploads) has nothing to
 match. `--as-is 3,5` or `--as-is-all` (every entry without a match) take the video's own
 audio instead, tagged from the playlist: the album is the playlist's title, the track number
-its position, the artist the uploader (or "Various Artists" when they differ). A playlist
-taken mostly as is counts as an album, so no playlist is made unless you ask. "Song | Artist"
-titles are read title first.
+its position, the artist the uploader (or "Various Artists" when they differ); with
+`--group none` each is a single of its own. "Song | Artist" titles are read title first.
 
 An entry is sure when title, artist and version match its MusicBrainz recording and the
 uploader is the artist, a label or Topic channel, or the playlist's own curator. Everything

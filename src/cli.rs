@@ -163,10 +163,10 @@ pub enum Command {
     /// Bring a folder of audio files into the library, or a YouTube / YouTube Music playlist
     /// (a link with `list=`). Dry run by default. A folder: --apply copies the files in and
     /// leaves the source alone; --move moves them instead. A playlist: every video is matched
-    /// to a MusicBrainz recording; --apply downloads the sure ones as album audio and creates the
-    /// playlist with its YouTube name, except for an album link (--playlist / --no-playlist decide). --also 3,7 takes
+    /// to a MusicBrainz recording; --apply downloads the sure ones as album audio and groups them
+    /// as a playlist with its YouTube name (--group album or none for no playlist). --also 3,7 takes
     /// the top match for unsure entries too; --as-is takes the video itself for music
-    /// MusicBrainz doesn't know (a game soundtrack), filed as an album named after the playlist.
+    /// MusicBrainz doesn't know (a game soundtrack), tagged from the playlist.
     Import {
         dir: PathBuf,
         /// Playlist entries (positions from the dry run) to take the top match for anyway.
@@ -181,14 +181,11 @@ pub enum Command {
         #[arg(long)]
         #[serde(default)]
         as_is_all: bool,
-        /// Only the songs, no playlist in tapedeck (the default for album links).
-        #[arg(long, conflicts_with = "playlist")]
+        /// How a playlist's songs are grouped: as a playlist with its YouTube name, as an album,
+        /// or not at all.
+        #[arg(long, value_enum, default_value_t = Group::Playlist)]
         #[serde(default)]
-        no_playlist: bool,
-        /// Also create the playlist, with its YouTube name (the default for anything but albums).
-        #[arg(long)]
-        #[serde(default)]
-        playlist: bool,
+        group: Group,
         /// Copy the files into the library (default is a dry run that changes nothing).
         #[arg(long)]
         apply: bool,
@@ -204,6 +201,19 @@ pub enum Command {
         #[arg(long, requires = "move")]
         delete_duplicates: bool,
     },
+}
+
+/// How an imported playlist's songs are grouped. They come into the library either way.
+#[derive(clap::ValueEnum, Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum Group {
+    /// A playlist with the YouTube name and order.
+    #[default]
+    Playlist,
+    /// No playlist; songs taken as is form one album named after the playlist.
+    Album,
+    /// No playlist; songs taken as is are singles.
+    None,
 }
 
 #[derive(clap::Args, Serialize, Deserialize, Debug, Clone, Default)]

@@ -22,6 +22,7 @@ use tokio::sync::{Mutex, mpsc};
 
 use crate::{
     App, Event,
+    cli::Group,
     request::{Analysis, Choice, ImportReport, Outcome, Pick, PlaylistPlan, playlist_id},
 };
 
@@ -32,15 +33,9 @@ struct PlaylistPending {
     picks: Vec<(usize, Pick)>,
     /// Which unsure entry the review shows; `None` shows the summary.
     at: Option<usize>,
-    /// Album (no playlist) or playlist, when the user flipped it; else the plan decides.
-    album: Option<bool>,
 }
 
 impl PlaylistPending {
-    fn as_album(&self) -> bool {
-        self.album.unwrap_or_else(|| self.plan.as_album(&self.picks))
-    }
-
     fn pick(&mut self, pos: usize, pick: Pick) {
         self.picks.retain(|(p, _)| *p != pos);
         self.picks.push((pos, pick));
@@ -432,7 +427,7 @@ impl Bot {
         let (plan, ()) = tokio::join!(analyze, self.relay(chat, mid, rx, "⏳ Matching"));
         match plan {
             Ok(plan) => {
-                let p = PlaylistPending { plan, picks: vec![], at: None, album: None };
+                let p = PlaylistPending { plan, picks: vec![], at: None };
                 self.playlist_show(chat, mid, &p).await?;
                 self.playlists.lock().await.insert(mid, p);
             }
@@ -478,15 +473,14 @@ impl Bot {
         let unsure = p.plan.unsure().count();
         match kind {
             "plx" => return self.edit(chat, mid, "✖ Cancelled.").await,
-            // Import, with the playlist ("p") or only the songs ("s"): the user's answer to "also
-            // create the playlist?".
+            // Import, grouped the way the user picked: as a playlist, an album, or not at all.
             "pli" => {
-                p.album = match arg {
-                    Some("p") => Some(false),
-                    Some("s") => Some(true),
-                    _ => p.album,
+                let group = match arg {
+                    Some("a") => Group::Album,
+                    Some("n") => Group::None,
+                    _ => Group::Playlist,
                 };
-                return self.playlist_import(chat, mid, p).await;
+                return self.playlist_import(chat, mid, p, group).await;
             }
             "plb" => p.at = None,
             "plr" => {
@@ -563,20 +557,18 @@ impl Bot {
                 let picked = if p.picks.is_empty() { String::new() } else { format!(", {} picked", p.picks.len()) };
                 let close = unsure.iter().filter(|e| e.close).count();
                 let close_txt = if close > 0 { format!(" ({close} close matches)") } else { String::new() };
-                let hint = if p.as_album() { " It looks like an album, so probably not." } else { "" };
+                let hint = if plan.album { " It looks like an album." } else { "" };
                 let text = format!(
-                    "📃 {}: {} videos\n✅ {new} new, {have} already here, 🤔 {} unsure{close_txt}{picked}\nAlso create the playlist \"{}\" in tapedeck?{hint}",
+                    "📃 {}: {} videos\n✅ {new} new, {have} already here, 🤔 {} unsure{close_txt}{picked}\nImport {take} songs, grouped as a playlist, an album, or not at all?{hint}",
                     plan.name,
                     plan.entries.len(),
                     unsure.len(),
-                    plan.name
                 );
-                // The suggested answer first.
-                let with =
-                    json!({ "text": format!("⬇️ Import {take} + playlist"), "callback_data": format!("pli:{mid}:p") });
-                let songs =
-                    json!({ "text": format!("⬇️ Import {take}, songs only"), "callback_data": format!("pli:{mid}:s") });
-                let imports = if p.as_album() { vec![songs, with] } else { vec![with, songs] };
+                let imports = vec![
+                    json!({ "text": "📃 Playlist", "callback_data": format!("pli:{mid}:p") }),
+                    json!({ "text": "💿 Album", "callback_data": format!("pli:{mid}:a") }),
+                    json!({ "text": "🎵 Not grouped", "callback_data": format!("pli:{mid}:n") }),
+                ];
                 let mut row = vec![];
                 if !unsure.is_empty() {
                     row.push(
@@ -613,13 +605,13 @@ impl Bot {
     }
 
     /// Import under the daemon's lock, with progress in the same message and the outcome last.
-    async fn playlist_import(&self, chat: i64, mid: i64, p: PlaylistPending) -> Result<()> {
+    async fn playlist_import(&self, chat: i64, mid: i64, p: PlaylistPending, group: Group) -> Result<()> {
         self.edit(chat, mid, &format!("⏳ Importing {}…", p.plan.name)).await?;
         let _guard = self.app.busy.lock().await;
         let (tx, rx) = mpsc::channel::<Event>(64);
         let app = &self.app;
-        let (plan, picks, as_album) = (&p.plan, &p.picks, p.as_album());
-        let apply = async move { app.apply_playlist(plan, picks, as_album, &tx).await };
+        let (plan, picks) = (&p.plan, &p.picks);
+        let apply = async move { app.apply_playlist(plan, picks, group, &tx).await };
         let (report, ()) = tokio::join!(apply, self.relay(chat, mid, rx, "⏳ Importing"));
         let text = match report {
             Ok(r) => import_summary(&p.plan.name, &r, &self.app.targets.iter().map(|t| t.name()).collect::<Vec<_>>()),
@@ -656,8 +648,10 @@ impl Bot {
 
 /// "✅ Name: 10 tracks, 8 downloaded, on plex." plus the failures, kept under Telegram's limit.
 fn import_summary(name: &str, r: &ImportReport, targets: &[&str]) -> String {
-    let on = if r.album {
-        " Only the songs, no playlist.".to_string()
+    let on = if r.group == Group::Album {
+        " Grouped as an album, no playlist.".to_string()
+    } else if r.group == Group::None {
+        " Not grouped, no playlist.".to_string()
     } else if targets.is_empty() {
         " The playlist file is written.".to_string()
     } else {
@@ -706,10 +700,10 @@ mod tests {
         let ok =
             super::import_summary("Mix", &super::ImportReport { tracks: 3, downloaded: 3, ..Default::default() }, &[]);
         assert_eq!(ok, "✅ Mix: 3 tracks, 3 downloaded. The playlist file is written.");
-        let album = super::ImportReport { tracks: 9, downloaded: 9, album: true, ..Default::default() };
+        let album = super::ImportReport { tracks: 9, downloaded: 9, group: super::Group::Album, ..Default::default() };
         assert_eq!(
             super::import_summary("Glava", &album, &["plex"]),
-            "✅ Glava: 9 tracks, 9 downloaded. Only the songs, no playlist."
+            "✅ Glava: 9 tracks, 9 downloaded. Grouped as an album, no playlist."
         );
     }
 }
