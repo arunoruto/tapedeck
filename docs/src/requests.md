@@ -30,12 +30,15 @@ candidates with numbers for `td request URL --pick N` or `td request URL --video
 
 A playlist link (anything with `list=`) is [`td import`](playlists.md#youtube-playlists) in
 the chat. The bot reads the playlist and edits one message as it matches, then sums up:
-"📃 Name: 37 videos, ✅ 30 new, 4 already here, 🤔 3 unsure". The buttons are Import, Review
-and Cancel. Review steps through the unsure entries one at a time, offering the top
+"📃 Name: 37 videos, ✅ 30 new, 4 already here, 🤔 3 unsure", and asks whether to also
+create the playlist in tapedeck: "⬇️ Import 34 + playlist" or "⬇️ Import 34, songs only", the
+suggested one first (songs only for an album's link). Review and Cancel sit below. Review steps through the unsure entries one at a time, offering the top
 candidates or Skip. A close match (found under the primary artist, or as the album track at
 that position) leads with "✅ That one", and the summary offers "✅ Take N close" to accept them
-all at once. It never offers "exactly this video", because playlists are mostly music
-videos. Import downloads the sure entries plus what review picked, edits the same message
+all at once. Entries MusicBrainz has nothing for offer "📼 The video itself" (and the summary
+"📼 Take N unmatched as is"): the video's own audio, filed as an album named after the
+playlist, for a game's soundtrack and the like. It is never the default, because playlists
+are mostly music videos. Import downloads the sure entries plus what review picked, edits the same message
 with progress, and finishes with the count, the sync targets the playlist went to, and any
 failures by name. A song shared from inside a playlist (`watch?v=…&list=…`) first asks "Just
 this song, or the whole playlist (37)?". A mix or private list with a song in it is treated

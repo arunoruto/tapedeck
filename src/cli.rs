@@ -163,14 +163,32 @@ pub enum Command {
     /// Bring a folder of audio files into the library, or a YouTube / YouTube Music playlist
     /// (a link with `list=`). Dry run by default. A folder: --apply copies the files in and
     /// leaves the source alone; --move moves them instead. A playlist: every video is matched
-    /// to a MusicBrainz recording; --apply downloads the sure ones as album audio and writes a
-    /// playlist in YouTube's order; --also 3,7 takes the top match for unsure entries too.
+    /// to a MusicBrainz recording; --apply downloads the sure ones as album audio and creates the
+    /// playlist with its YouTube name, except for an album link (--playlist / --no-playlist decide). --also 3,7 takes
+    /// the top match for unsure entries too; --as-is takes the video itself for music
+    /// MusicBrainz doesn't know (a game soundtrack), filed as an album named after the playlist.
     Import {
         dir: PathBuf,
         /// Playlist entries (positions from the dry run) to take the top match for anyway.
         #[arg(long, value_delimiter = ',')]
         #[serde(default)]
         also: Vec<usize>,
+        /// Playlist entries to take as the video itself, tagged from the playlist.
+        #[arg(long, value_delimiter = ',')]
+        #[serde(default)]
+        as_is: Vec<usize>,
+        /// Every playlist entry without a MusicBrainz match, as the video itself.
+        #[arg(long)]
+        #[serde(default)]
+        as_is_all: bool,
+        /// Only the songs, no playlist in tapedeck (the default for album links).
+        #[arg(long, conflicts_with = "playlist")]
+        #[serde(default)]
+        no_playlist: bool,
+        /// Also create the playlist, with its YouTube name (the default for anything but albums).
+        #[arg(long)]
+        #[serde(default)]
+        playlist: bool,
         /// Copy the files into the library (default is a dry run that changes nothing).
         #[arg(long)]
         apply: bool,

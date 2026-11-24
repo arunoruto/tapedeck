@@ -217,54 +217,7 @@ impl App {
                 let p = self.db().find_playlist(&playlist)?.with_context(|| format!("no playlist {playlist:?}"))?;
                 self.push(&p, to.as_deref(), tx).await
             }
-            Command::Unpush { playlist, to, yes } => {
-                let path = Path::new(&playlist);
-                let title = if path.extension().is_some_and(|e| e == "m3u8") && path.is_file() {
-                    self.file_title(path)?
-                } else {
-                    playlist.clone()
-                };
-                for target in self.targets(to.as_deref())? {
-                    let hits: Vec<_> =
-                        target.list_playlists().await?.into_iter().filter(|p| p.title == title && !p.smart).collect();
-                    if hits.is_empty() {
-                        info(tx, format!("{}: nothing called {title:?}", target.name())).await?;
-                        continue;
-                    }
-                    if !yes {
-                        info(
-                            tx,
-                            format!(
-                                "{}: would remove {title:?} ({} tracks); pass --yes",
-                                target.name(),
-                                hits[0].tracks
-                            ),
-                        )
-                        .await?;
-                        continue;
-                    }
-                    self.backup(target, &hits, &self.config.playlist_dir().join("backup"), tx).await?;
-                    for (i, p) in hits.iter().enumerate() {
-                        progress_at(tx, i + 1, hits.len(), format!("deleting {}", p.title)).await?;
-                        target.delete_playlist(&p.id).await?;
-                        info(
-                            tx,
-                            format!(
-                                "{}: removed {} ({} tracks); the local file is untouched",
-                                target.name(),
-                                p.title,
-                                p.tracks
-                            ),
-                        )
-                        .await?;
-                    }
-                    let playlists = self.db().playlists()?;
-                    for p in playlists.iter().filter(|p| self.remote_title(p, &playlists) == title) {
-                        self.db().clear_sync(p.id, target.name())?;
-                    }
-                }
-                Ok(())
-            }
+            Command::Unpush { playlist, to, yes } => self.unpush(playlist, to, yes, tx).await,
             Command::Retry { track: None } => {
                 let n = self.db().retry_failed()?;
                 info(tx, format!("{n} tracks reset to wanted")).await
@@ -393,10 +346,17 @@ impl App {
                 ensure!(!self.config.external.paths.is_empty(), "no external.paths configured");
                 self.external_dedupe(dry_run, tx).await
             }
-            Command::Import { dir, apply, also, .. } if dir.to_string_lossy().starts_with("http") => {
-                self.import_playlist(&dir.to_string_lossy(), apply, &also, tx).await
+            Command::Import { dir, apply, also, as_is, as_is_all, no_playlist, playlist, .. }
+                if dir.to_string_lossy().starts_with("http") =>
+            {
+                let shape = match (no_playlist, playlist) {
+                    (true, _) => Some(true),
+                    (_, true) => Some(false),
+                    _ => None,
+                };
+                self.import_playlist(&dir.to_string_lossy(), apply, &also, &as_is, as_is_all, shape, tx).await
             }
-            Command::Import { dir, apply, r#move, copy: _, delete_duplicates, also: _ } => {
+            Command::Import { dir, apply, r#move, copy: _, delete_duplicates, .. } => {
                 self.import(&dir, apply, !r#move, delete_duplicates, tx).await
             }
         }
@@ -1298,6 +1258,75 @@ impl App {
         let playlists = self.db().playlists_with_track(track)?;
         self.rewrite_m3us(Some(&playlists))?;
         info(tx, format!("track {track} is now {} - {} [{}]", r.artist, r.title, r.album)).await
+    }
+
+    /// Remove a playlist (by title, or an .m3u8 file's) from the targets, backing it up first;
+    /// without `yes`, only say what would go.
+    pub(crate) async fn unpush(
+        &self,
+        playlist: String,
+        to: Option<String>,
+        yes: bool,
+        tx: &Sender<Event>,
+    ) -> Result<()> {
+        let path = Path::new(&playlist);
+        let title = if path.extension().is_some_and(|e| e == "m3u8") && path.is_file() {
+            self.file_title(path)?
+        } else {
+            playlist.clone()
+        };
+        for target in self.targets(to.as_deref())? {
+            let hits: Vec<_> =
+                target.list_playlists().await?.into_iter().filter(|p| p.title == title && !p.smart).collect();
+            if hits.is_empty() {
+                info(tx, format!("{}: nothing called {title:?}", target.name())).await?;
+                continue;
+            }
+            if !yes {
+                info(tx, format!("{}: would remove {title:?} ({} tracks); pass --yes", target.name(), hits[0].tracks))
+                    .await?;
+                continue;
+            }
+            self.backup(target, &hits, &self.config.playlist_dir().join("backup"), tx).await?;
+            for (i, p) in hits.iter().enumerate() {
+                progress_at(tx, i + 1, hits.len(), format!("deleting {}", p.title)).await?;
+                target.delete_playlist(&p.id).await?;
+                info(
+                    tx,
+                    format!(
+                        "{}: removed {} ({} tracks); the local file is untouched",
+                        target.name(),
+                        p.title,
+                        p.tracks
+                    ),
+                )
+                .await?;
+            }
+            let playlists = self.db().playlists()?;
+            for p in playlists.iter().filter(|p| self.remote_title(p, &playlists) == title) {
+                self.db().clear_sync(p.id, target.name())?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Forget a playlist: off the targets (backed up first), its m3u8 deleted, its rows gone.
+    /// The tracks stay in the library.
+    pub(crate) async fn drop_playlist(&self, p: &Playlist, tx: &Sender<Event>) -> Result<()> {
+        let playlists = self.db().playlists()?;
+        let title = self.remote_title(p, &playlists);
+        if !self.targets.is_empty() {
+            self.unpush(title.clone(), None, true, tx).await?;
+        }
+        if let Some(m3u) = &p.m3u_path {
+            match std::fs::remove_file(m3u) {
+                Ok(()) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                Err(e) => return Err(e).with_context(|| format!("deleting {m3u}")),
+            }
+        }
+        self.db().delete_playlist(p.id)?;
+        info(tx, format!("playlist {title:?} removed; its tracks stay in the library")).await
     }
 
     /// Point playlist backups at files that just moved, whoever moved them.

@@ -575,6 +575,14 @@ impl Db {
         Ok(())
     }
 
+    /// A playlist and everything hanging off it (foreign keys are not enforced, so by hand).
+    pub fn delete_playlist(&self, id: i64) -> Result<()> {
+        self.0.execute("DELETE FROM playlist_tracks WHERE playlist_id = ?1", [id])?;
+        self.0.execute("DELETE FROM playlist_syncs WHERE playlist_id = ?1", [id])?;
+        self.0.execute("DELETE FROM playlists WHERE id = ?1", [id])?;
+        Ok(())
+    }
+
     pub fn delete_track(&self, id: i64) -> Result<()> {
         self.0.execute("DELETE FROM requests WHERE track_id = ?1", [id])?;
         self.0.execute("DELETE FROM playlist_tracks WHERE track_id = ?1", [id])?;

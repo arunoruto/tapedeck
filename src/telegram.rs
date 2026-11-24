@@ -22,16 +22,29 @@ use tokio::sync::{Mutex, mpsc};
 
 use crate::{
     App, Event,
-    request::{Analysis, Choice, ImportReport, Outcome, PlaylistPlan, playlist_id},
+    request::{Analysis, Choice, ImportReport, Outcome, Pick, PlaylistPlan, playlist_id},
 };
 
 /// A playlist read and waiting for Import, possibly mid-review.
 struct PlaylistPending {
     plan: PlaylistPlan,
-    /// (position, candidate index) chosen in review.
-    picks: Vec<(usize, usize)>,
+    /// What was chosen for unsure entries, by position.
+    picks: Vec<(usize, Pick)>,
     /// Which unsure entry the review shows; `None` shows the summary.
     at: Option<usize>,
+    /// Album (no playlist) or playlist, when the user flipped it; else the plan decides.
+    album: Option<bool>,
+}
+
+impl PlaylistPending {
+    fn as_album(&self) -> bool {
+        self.album.unwrap_or_else(|| self.plan.as_album(&self.picks))
+    }
+
+    fn pick(&mut self, pos: usize, pick: Pick) {
+        self.picks.retain(|(p, _)| *p != pos);
+        self.picks.push((pos, pick));
+    }
 }
 
 struct Pending {
@@ -419,7 +432,7 @@ impl Bot {
         let (plan, ()) = tokio::join!(analyze, self.relay(chat, mid, rx, "⏳ Matching"));
         match plan {
             Ok(plan) => {
-                let p = PlaylistPending { plan, picks: vec![], at: None };
+                let p = PlaylistPending { plan, picks: vec![], at: None, album: None };
                 self.playlist_show(chat, mid, &p).await?;
                 self.playlists.lock().await.insert(mid, p);
             }
@@ -465,26 +478,45 @@ impl Bot {
         let unsure = p.plan.unsure().count();
         match kind {
             "plx" => return self.edit(chat, mid, "✖ Cancelled.").await,
-            "pli" => return self.playlist_import(chat, mid, p).await,
+            // Import, with the playlist ("p") or only the songs ("s"): the user's answer to "also
+            // create the playlist?".
+            "pli" => {
+                p.album = match arg {
+                    Some("p") => Some(false),
+                    Some("s") => Some(true),
+                    _ => p.album,
+                };
+                return self.playlist_import(chat, mid, p).await;
+            }
+            "plb" => p.at = None,
             "plr" => {
                 p.picks.clear();
                 p.at = Some(0);
             }
-            "pla" => {
-                for e in p.plan.unsure().filter(|e| e.close && !e.candidates.is_empty()) {
-                    if !p.picks.iter().any(|(pos, _)| *pos == e.pos) {
-                        p.picks.push((e.pos, 0));
-                    }
+            // Every close match's found track, or every entry without a match as the video itself.
+            "pla" | "plz" => {
+                let open: Vec<usize> = p
+                    .plan
+                    .unsure()
+                    .filter(
+                        |e| if kind == "pla" { e.close && !e.candidates.is_empty() } else { e.candidates.is_empty() },
+                    )
+                    .map(|e| e.pos)
+                    .filter(|pos| !p.picks.iter().any(|(q, _)| q == pos))
+                    .collect();
+                let pick = if kind == "pla" { Pick::Candidate(0) } else { Pick::AsIs };
+                for pos in open {
+                    p.pick(pos, pick);
                 }
                 p.at = None;
             }
-            "plc" | "pls" => {
+            "plc" | "plv" | "pls" => {
                 let at = p.at.unwrap_or(0);
-                if kind == "plc"
-                    && let (Some(e), Some(ci)) = (p.plan.unsure().nth(at), arg.and_then(|a| a.parse().ok()))
-                {
-                    let pos = e.pos;
-                    p.picks.push((pos, ci));
+                let pos = p.plan.unsure().nth(at).map(|e| e.pos);
+                match (kind, pos, arg.and_then(|a| a.parse().ok())) {
+                    ("plc", Some(pos), Some(ci)) => p.pick(pos, Pick::Candidate(ci)),
+                    ("plv", Some(pos), _) => p.pick(pos, Pick::AsIs),
+                    _ => {}
                 }
                 p.at = Some(at + 1).filter(|n| *n < unsure);
             }
@@ -500,7 +532,6 @@ impl Bot {
         let plan = &p.plan;
         let unsure: Vec<_> = plan.unsure().collect();
         let take = plan.entries.iter().filter(|e| e.sure).count() + p.picks.len();
-        let import = json!({ "text": format!("⬇️ Import {take}"), "callback_data": format!("pli:{mid}") });
         let (text, keys) = match p.at.and_then(|i| unsure.get(i).map(|e| (i, e))) {
             Some((i, e)) => {
                 let mut lines =
@@ -515,8 +546,16 @@ impl Bot {
                         if ci == 0 && e.close { "✅ That one".to_string() } else { format!("🎵 {}", ci + 1) };
                     row.push(json!({ "text": label, "callback_data": format!("plc:{mid}:{ci}") }));
                 }
+                // Not on MusicBrainz at all (a game's soundtrack): the video's own audio.
+                let as_is = json!({ "text": "📼 The video itself", "callback_data": format!("plv:{mid}") });
                 let skip = json!({ "text": "⏭ Skip", "callback_data": format!("pls:{mid}") });
-                (lines.join("\n"), json!([row, [skip, import]]))
+                let mut keys = vec![];
+                if !row.is_empty() {
+                    keys.push(json!(row));
+                }
+                keys.push(json!([as_is, skip]));
+                keys.push(json!([{ "text": "⬅️ Done reviewing", "callback_data": format!("plb:{mid}") }]));
+                (lines.join("\n"), json!(keys))
             }
             None => {
                 let new = plan.entries.iter().filter(|e| e.sure && !e.have).count();
@@ -524,27 +563,45 @@ impl Bot {
                 let picked = if p.picks.is_empty() { String::new() } else { format!(", {} picked", p.picks.len()) };
                 let close = unsure.iter().filter(|e| e.close).count();
                 let close_txt = if close > 0 { format!(" ({close} close matches)") } else { String::new() };
+                let hint = if p.as_album() { " It looks like an album, so probably not." } else { "" };
                 let text = format!(
-                    "📃 {}: {} videos\n✅ {new} new, {have} already here, 🤔 {} unsure{close_txt}{picked}",
+                    "📃 {}: {} videos\n✅ {new} new, {have} already here, 🤔 {} unsure{close_txt}{picked}\nAlso create the playlist \"{}\" in tapedeck?{hint}",
                     plan.name,
                     plan.entries.len(),
-                    unsure.len()
+                    unsure.len(),
+                    plan.name
                 );
-                let mut row = vec![import];
+                // The suggested answer first.
+                let with =
+                    json!({ "text": format!("⬇️ Import {take} + playlist"), "callback_data": format!("pli:{mid}:p") });
+                let songs =
+                    json!({ "text": format!("⬇️ Import {take}, songs only"), "callback_data": format!("pli:{mid}:s") });
+                let imports = if p.as_album() { vec![songs, with] } else { vec![with, songs] };
+                let mut row = vec![];
                 if !unsure.is_empty() {
                     row.push(
                         json!({ "text": format!("🔍 Review {}", unsure.len()), "callback_data": format!("plr:{mid}") }),
                     );
                 }
-                let open_close =
-                    unsure.iter().filter(|e| e.close && !p.picks.iter().any(|(pos, _)| *pos == e.pos)).count();
+                row.push(json!({ "text": "✖ Cancel", "callback_data": format!("plx:{mid}") }));
+                let open = |e: &&&crate::request::PlaylistEntry| !p.picks.iter().any(|(pos, _)| *pos == e.pos);
+                let open_close = unsure.iter().filter(|e| e.close).filter(open).count();
+                let unmatched = unsure.iter().filter(|e| e.candidates.is_empty()).filter(open).count();
+                let mut more = vec![];
                 if open_close > 0 {
-                    row.push(
+                    more.push(
                         json!({ "text": format!("✅ Take {open_close} close"), "callback_data": format!("pla:{mid}") }),
                     );
                 }
-                row.push(json!({ "text": "✖ Cancel", "callback_data": format!("plx:{mid}") }));
-                (text, json!([row]))
+                if unmatched > 0 {
+                    more.push(json!({ "text": format!("📼 Take {unmatched} unmatched as is"), "callback_data": format!("plz:{mid}") }));
+                }
+                let mut keys = vec![json!(imports)];
+                if !more.is_empty() {
+                    keys.push(json!(more));
+                }
+                keys.push(json!(row));
+                (text, json!(keys))
             }
         };
         self.call(
@@ -561,8 +618,8 @@ impl Bot {
         let _guard = self.app.busy.lock().await;
         let (tx, rx) = mpsc::channel::<Event>(64);
         let app = &self.app;
-        let (plan, picks) = (&p.plan, &p.picks);
-        let apply = async move { app.apply_playlist(plan, picks, &tx).await };
+        let (plan, picks, as_album) = (&p.plan, &p.picks, p.as_album());
+        let apply = async move { app.apply_playlist(plan, picks, as_album, &tx).await };
         let (report, ()) = tokio::join!(apply, self.relay(chat, mid, rx, "⏳ Importing"));
         let text = match report {
             Ok(r) => import_summary(&p.plan.name, &r, &self.app.targets.iter().map(|t| t.name()).collect::<Vec<_>>()),
@@ -599,7 +656,9 @@ impl Bot {
 
 /// "✅ Name: 10 tracks, 8 downloaded, on plex." plus the failures, kept under Telegram's limit.
 fn import_summary(name: &str, r: &ImportReport, targets: &[&str]) -> String {
-    let on = if targets.is_empty() {
+    let on = if r.album {
+        " Only the songs, no playlist.".to_string()
+    } else if targets.is_empty() {
         " The playlist file is written.".to_string()
     } else {
         format!(" On {}.", targets.join(", "))
@@ -635,11 +694,22 @@ mod tests {
 
     #[test]
     fn import_summary_lists_failures() {
-        let r = super::ImportReport { tracks: 10, downloaded: 8, failed: vec!["A - x".into(), "B - y".into()] };
+        let r = super::ImportReport {
+            tracks: 10,
+            downloaded: 8,
+            failed: vec!["A - x".into(), "B - y".into()],
+            ..Default::default()
+        };
         let t = super::import_summary("Mix", &r, &["plex"]);
         assert!(t.starts_with("⚠️ Mix: 10 tracks, 8 downloaded, 2 failed. On plex."), "{t}");
         assert!(t.contains("\n• B - y"));
-        let ok = super::import_summary("Mix", &super::ImportReport { tracks: 3, downloaded: 3, failed: vec![] }, &[]);
+        let ok =
+            super::import_summary("Mix", &super::ImportReport { tracks: 3, downloaded: 3, ..Default::default() }, &[]);
         assert_eq!(ok, "✅ Mix: 3 tracks, 3 downloaded. The playlist file is written.");
+        let album = super::ImportReport { tracks: 9, downloaded: 9, album: true, ..Default::default() };
+        assert_eq!(
+            super::import_summary("Glava", &album, &["plex"]),
+            "✅ Glava: 9 tracks, 9 downloaded. Only the songs, no playlist."
+        );
     }
 }
