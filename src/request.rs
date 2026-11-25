@@ -9,7 +9,10 @@
 //! are listed and only taken with `--also`. Mixes (endless `RD…` lists) and private lists
 //! (Liked, Watch later: they need a signed-in account) are refused.
 
-use std::path::Path;
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result, bail, ensure};
 use serde::Serialize;
@@ -504,15 +507,20 @@ impl App {
         group: Group,
         tx: &Sender<Event>,
     ) -> Result<ImportReport> {
-        // Taken as is, the songs share one album; its artist is theirs when they agree.
-        let as_is: Vec<&PlaylistEntry> =
-            plan.entries.iter().filter(|e| !e.sure && picks.contains(&(e.pos, Pick::AsIs))).collect();
+        // Taken as is (now, or on an earlier run: the remembered track is a video), the songs
+        // share one album when grouped as one; its artist is theirs when they agree.
+        let as_is_entry = |e: &PlaylistEntry| {
+            (!e.sure && picks.contains(&(e.pos, Pick::AsIs)))
+                || (e.sure && e.candidates.first().is_some_and(|c| c.mbid.starts_with("youtube:")))
+        };
+        let as_is: Vec<&PlaylistEntry> = plan.entries.iter().filter(|e| as_is_entry(e)).collect();
         let album_artist = match as_is.first().map(|e| e.source.artist.as_str()) {
             Some(a) if !a.is_empty() && as_is.iter().all(|e| e.source.artist == a) => a.to_string(),
             _ => "Various Artists".to_string(),
         };
         let mut ids = vec![];
         let mut taken: Vec<(String, i64)> = vec![];
+        let mut moves: HashMap<PathBuf, PathBuf> = HashMap::new();
         for e in &plan.entries {
             let pick = if e.sure {
                 Some(Pick::Candidate(0))
@@ -551,12 +559,23 @@ impl App {
                     }
                 }
             };
+            // A song taken as is before follows the grouping chosen now.
+            if as_is_entry(e) {
+                let want = as_is_recording(e, plan, &album_artist, group);
+                if let Err(err) = self.regroup(tid, &want, group != Group::Album, &mut moves, tx).await {
+                    info(tx, format!("{}: {} - regrouping: {err:#}", e.pos, e.source.title)).await?;
+                }
+            }
             if !ids.contains(&tid) {
                 ids.push(tid);
             }
             if let Some(v) = &e.source.video_id {
                 taken.push((format!("yt.{}.{v}", plan.id), tid));
             }
+        }
+        if !moves.is_empty() {
+            self.rewrite_m3us(None)?;
+            self.follow_moves(&moves, tx).await?;
         }
         for (key, tid) in &taken {
             self.db().meta_set(key, &tid.to_string())?;
@@ -618,6 +637,61 @@ impl App {
             tracing::debug!("import: other downloads failed: {e:#}");
         }
         Ok(report)
+    }
+
+    /// Give a track taken as is the tags `want` says (another grouping than before): update the
+    /// row, move the file where the template now puts it, retag it. A single's folder gets the
+    /// song's own picture as cover.jpg; an album's folder gets one when it has none.
+    async fn regroup(
+        &self,
+        tid: i64,
+        want: &Recording,
+        single: bool,
+        moves: &mut HashMap<PathBuf, PathBuf>,
+        tx: &Sender<Event>,
+    ) -> Result<()> {
+        let Some(t) = self.db().track_by_id(tid)? else { return Ok(()) };
+        if t.album == want.album && t.album_artist == want.album_artist && t.track_no == want.track_no {
+            return Ok(());
+        }
+        self.db().insert_track(&new_track(&t.recording_mbid, want))?;
+        // Not downloaded yet: the download tags and files it the new way.
+        let (Some(old_rel), "ready") = (&t.path, t.status.as_str()) else { return Ok(()) };
+        let cfg = &self.config;
+        let fresh = self.db().track_by_id(tid)?.context("track vanished")?;
+        let ext = Path::new(old_rel).extension().and_then(|e| e.to_str()).unwrap_or("bin");
+        let mut rel = PathBuf::from(old_rel);
+        let new_rel = library::render_template(&cfg.path_template, &fresh, ext)?;
+        if new_rel != rel {
+            let new_rel = library::unique(&cfg.library, &new_rel);
+            library::move_track(&cfg.library, &rel, &new_rel)?;
+            // A single's folder is tapedeck's own (one song and the cover.jpg written for it):
+            // once the song has left, the cover goes too and the folder with it.
+            let was_single = crate::covers::youtube_id(&t).is_some_and(|v| t.album_mbid == format!("youtube:{v}"));
+            if let Some(old_dir) = cfg.library.join(&rel).parent()
+                && was_single
+                && old_dir.is_dir()
+                && library::walk(old_dir).is_empty()
+            {
+                for name in crate::steam::COVER_NAMES {
+                    let _ = std::fs::remove_file(old_dir.join(name));
+                }
+                let _ = std::fs::remove_dir(old_dir);
+            }
+            self.db().set_path(tid, &new_rel.to_string_lossy())?;
+            moves.insert(cfg.library.join(&rel), cfg.library.join(&new_rel));
+            info(tx, format!("  {} → {}", rel.display(), new_rel.display())).await?;
+            rel = new_rel;
+        }
+        let file = cfg.library.join(&rel);
+        library::tag(&file, &fresh)?;
+        if let (Some(dir), Some(pic)) = (file.parent(), crate::steam::cover_for(&file)) {
+            let cover = dir.join("cover.jpg");
+            if single || !crate::steam::COVER_NAMES.iter().any(|n| dir.join(n).is_file()) {
+                std::fs::write(&cover, pic).with_context(|| format!("writing {}", cover.display()))?;
+            }
+        }
+        Ok(())
     }
 
     /// `td import <link>`: the dry run, or with `apply` the import. `also` takes the top match
@@ -800,11 +874,12 @@ fn source_from_video(url: &str, v: &Value) -> Source {
     }
 }
 
-/// A playlist entry taken as is, tagged from the video: track N of an album named after the
-/// playlist (no year: one folder for all of it), or with `Group::None` a single of its own.
+/// A playlist entry taken as is, tagged from the video: grouped as an album, track N of an album
+/// named after the playlist (no year: one folder for all of it); otherwise a single of its own,
+/// so every song keeps its own cover (Plex shows one picture per album).
 fn as_is_recording(e: &PlaylistEntry, plan: &PlaylistPlan, album_artist: &str, group: Group) -> Recording {
     let artist = if e.source.artist.is_empty() { album_artist.to_string() } else { e.source.artist.clone() };
-    if group == Group::None {
+    if group != Group::Album {
         return Recording {
             title: e.source.title.clone(),
             artist: artist.clone(),
@@ -814,7 +889,7 @@ fn as_is_recording(e: &PlaylistEntry, plan: &PlaylistPlan, album_artist: &str, g
             album: e.source.title.clone(),
             album_mbid: format!("youtube:{}", e.source.video_id.clone().unwrap_or_default()),
             year: e.source.year,
-            track_no: None,
+            track_no: Some(1),
             length_ms: e.source.duration_ms,
         };
     }
@@ -973,12 +1048,14 @@ mod tests {
             (r.title.as_str(), r.artist.as_str(), r.album_mbid.as_str()),
             ("Wrong Pill", "One More Lawn (Radio)", "youtube:PLJ19oo9w4X5A")
         );
-        // Ungrouped: a single of its own.
-        let single = as_is_recording(&plan.entries[1], &plan, "One More Lawn (Radio)", Group::None);
-        assert_eq!(
-            (single.album.as_str(), single.album_mbid.as_str(), single.track_no),
-            ("Wrong Pill", "youtube:v2", None)
-        );
+        // As a playlist or ungrouped: a single of its own, so it keeps its own cover in Plex.
+        for group in [Group::Playlist, Group::None] {
+            let single = as_is_recording(&plan.entries[1], &plan, "One More Lawn (Radio)", group);
+            assert_eq!(
+                (single.album.as_str(), single.album_mbid.as_str(), single.track_no),
+                ("Wrong Pill", "youtube:v2", Some(1))
+            );
+        }
     }
 
     #[test]
