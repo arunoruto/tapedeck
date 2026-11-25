@@ -36,7 +36,8 @@ use crate::{
 };
 
 const AUDIO_EXT: &[&str] = &["mp3", "flac", "ogg", "opus", "m4a", "wav", "aac"];
-const COVER_NAMES: &[&str] = &["cover.jpg", "cover.png", "folder.jpg", "front.jpg", "Cover.jpg", "Folder.jpg"];
+pub(crate) const COVER_NAMES: &[&str] =
+    &["cover.jpg", "cover.png", "folder.jpg", "front.jpg", "Cover.jpg", "Folder.jpg"];
 
 /// One soundtrack after an import pass.
 #[derive(Serialize, Debug, Clone)]

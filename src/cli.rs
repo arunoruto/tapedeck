@@ -115,6 +115,14 @@ pub enum Command {
         #[arg(long)]
         recording: String,
     },
+    /// Covers for tracks taken from YouTube as the video itself (no release, so no Cover Art
+    /// Archive): the video's thumbnail, cropped square, embedded and saved as cover.jpg. New
+    /// downloads get it on their own; this fills in the ones that have none.
+    Covers {
+        /// List what would get a cover without fetching anything.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Re-query MusicBrainz for every track, retag, and move files whose templated path changed.
     Refile {
         /// Report what would move without touching anything.

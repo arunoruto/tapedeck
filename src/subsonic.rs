@@ -63,7 +63,8 @@ fn song(t: &Track) -> Song {
         year: t.year,
         duration: t.duration_ms.map(|ms| ms / 1000),
         path: t.path.clone().unwrap_or_default(),
-        cover_art: (is_uuid(&album_id) || is_steam_id(&album_id)).then(|| album_id.clone()),
+        cover_art: (is_uuid(&album_id) || is_steam_id(&album_id) || album_id.starts_with("youtube:"))
+            .then(|| album_id.clone()),
         music_brainz_id: is_uuid(&t.recording_mbid).then(|| t.recording_mbid.clone()),
         album_music_brainz_id: is_uuid(&album_id).then(|| album_id.clone()),
         artist_music_brainz_id: is_uuid(&t.album_artist_mbid).then(|| t.album_artist_mbid.clone()),
@@ -193,9 +194,11 @@ impl Library for Backend {
             Ok(n) => self.app.db().track_by_id(n).map_err(internal)?.map(|t| t.album_mbid).unwrap_or_default(),
             Err(_) => id.to_string(),
         };
-        if is_steam_id(&mbid) || mbid.starts_with("xa") {
-            // Steam albums and external albums: the picture in the first file, or the folder's.
-            let file = if is_steam_id(&mbid) {
+        let own_files = is_steam_id(&mbid) || mbid.starts_with("youtube:");
+        if own_files || mbid.starts_with("xa") {
+            // Steam albums, albums taken from YouTube and external albums: the picture in the
+            // first file, or the folder's.
+            let file = if own_files {
                 let tracks = self.app.db().all_tracks().map_err(internal)?;
                 let rel = tracks.iter().find(|t| t.album_mbid == mbid && playable(t)).and_then(|t| t.path.clone());
                 rel.map(|rel| self.app.config.library.join(rel))

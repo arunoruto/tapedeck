@@ -185,11 +185,7 @@ impl App {
             .collect();
         let stored: HashMap<i64, LengthRow> = self.db().lengths_all()?.into_iter().map(|r| (r.track_id, r)).collect();
         let external = self.db().external_all()?;
-        let ffmpeg = match cfg.download.ffmpeg_bin.as_deref().map(Path::new) {
-            Some(p) if p.is_dir() => p.join("ffmpeg"),
-            Some(p) => p.to_path_buf(),
-            None => PathBuf::from("ffmpeg"),
-        };
+        let ffmpeg = self.ffmpeg();
         let mut silence_ok = true;
         let mut counts: Vec<(String, usize)> = vec![];
         for (i, t) in tracks.iter().enumerate() {

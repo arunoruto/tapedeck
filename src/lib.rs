@@ -2,6 +2,7 @@ pub mod api;
 pub mod app;
 pub mod cli;
 pub mod config;
+pub mod covers;
 pub mod daemon;
 pub mod db;
 pub mod download;

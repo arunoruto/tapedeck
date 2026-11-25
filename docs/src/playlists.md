@@ -49,6 +49,10 @@ match. `--as-is 3,5` or `--as-is-all` (every entry without a match) take the vid
 audio instead, tagged from the playlist: the album is the playlist's title, the track number
 its position, the artist the uploader (or "Various Artists" when they differ); with
 `--group none` each is a single of its own. "Song | Artist" titles are read title first.
+With no release there is no Cover Art Archive cover, so each such song gets its video's
+thumbnail, cropped to the square in its middle (where a Topic video's album art sits),
+embedded in the file and saved as `cover.jpg` in the album folder when there is none.
+`td covers` fills it in for songs taken before this existed.
 
 An entry is sure when title, artist and version match its MusicBrainz recording and the
 uploader is the artist, a label or Topic channel, or the playlist's own curator. Everything

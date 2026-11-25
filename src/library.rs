@@ -106,7 +106,13 @@ pub fn tag(path: &Path, t: &Track) -> Result<()> {
         file.insert_tag(Tag::new(ty));
     }
     let tag = file.primary_tag_mut().expect("tag inserted above");
+    // Clearing drops embedded pictures too; a cover (a YouTube thumbnail, an imported file's art)
+    // must survive a retag.
+    let pictures = tag.pictures().to_vec();
     tag.clear();
+    for p in pictures {
+        tag.push_picture(p);
+    }
     tag.set_title(t.title.clone());
     tag.set_artist(t.artist.clone());
     tag.set_album(t.album.clone());

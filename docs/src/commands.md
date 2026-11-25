@@ -14,6 +14,7 @@
 | `td source ID URL` | Pin the download URL for one track and queue it |
 | `td retag ID --recording MBID` | Correct a wrong match: make the track that recording, retag, move if the path changes |
 | `td refile [--dry-run]` | Re-check every track against MusicBrainz, retag, move files whose path changed |
+| `td covers [--dry-run]` | Covers for tracks taken from YouTube as the video itself: the thumbnail, cropped square, embedded and saved as `cover.jpg` (new downloads get it on their own) |
 | `td lengths [TRACK] [--list] [--verdict V]` | Files whose length is off their recording by more than max(10 s, 5 %), sorted into padded, external, metadata (a better-fitting recording to relink to), release (Deezer has a version this long, so MusicBrainz is off), broken, longer and shorter. Stored for review; `--list` shows the stored audit without checking again; good ones are hidden unless `--verdict good` (or `all`) |
 | `td lengths TRACK --mark good\|bad\|relink\|none` | Judge a finding after listening (the TUI's Review tab does the same with `g` `b` `r` `u`) |
 | `td lengths [TRACK] --fix` | Act on the verdicts only: bad files are downloaded again (kept only when closer, old file under `<library>/.tapedeck-backup/`), relink ones retagged |

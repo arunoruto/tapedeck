@@ -261,6 +261,7 @@ impl App {
             }
             Command::Retag { track, recording } => self.retag(track, recording, tx).await,
             Command::Refile { dry_run } => self.refile(dry_run, tx).await,
+            Command::Covers { dry_run } => self.covers(dry_run, tx).await,
             Command::Remote { action } => self.remote(action, tx).await,
             Command::Request { input, pick, video } => {
                 let a = self.analyze_request(&input).await?;
@@ -1453,6 +1454,13 @@ impl App {
                     self.db().mark_ready(t.id, &rel.to_string_lossy(), url.as_deref())?;
                     done += 1;
                     done_ids.push(t.id);
+                    // Taken as the video itself: no release to get a cover from, so its thumbnail.
+                    if crate::covers::youtube_id(t).is_some() {
+                        let filed = Track { path: Some(rel.to_string_lossy().into_owned()), ..t.clone() };
+                        if let Err(e) = self.youtube_cover(&filed).await {
+                            info(tx, format!("cover for {} - {}: {e:#}", t.artist, t.title)).await?;
+                        }
+                    }
                 }
                 Err(e) => {
                     self.db().mark_failed(t.id, &format!("{e:#}"))?;
