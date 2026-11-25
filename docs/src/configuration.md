@@ -26,7 +26,7 @@ Lidarr-style tokens inside `{}`:
 | `{artist}` | Track artist credit as MusicBrainz prints it (`A feat. B`). |
 | `{album_artist}` | Artist credit of the release the track was filed under. Differs from `{artist}` on compilations and guest features. |
 | `{album}` | Release title. |
-| `{year}` | Release year, or `Unknown`. |
+| `{year}` | Release year. Without one, ` ({year})`, ` [{year}]` and ` - {year}` disappear with their brackets; a `{year}` on its own (a folder) says `Unknown`. |
 | `{track}` / `{track:02}` | Track number, plain or zero-padded. |
 | `{title}` | Recording title. |
 | `{ext}` | File extension from the download. |

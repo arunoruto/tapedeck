@@ -362,12 +362,15 @@ impl App {
     /// move files whose templated path changed.
     async fn refile(&self, dry_run: bool, tx: &Sender<Event>) -> Result<()> {
         let cfg = &self.config;
-        // Externals are not ours to touch; "youtube:…" rows (requests taken as the video) have no recording.
+        // Externals are not ours to touch. Tracks taken as the video ("youtube:…") have no
+        // recording to ask about, but their path is re-rendered all the same.
         let tracks: Vec<Track> = self
             .db()
             .all_tracks()?
             .into_iter()
-            .filter(|t| !is_external(t) && library::is_uuid(&t.recording_mbid))
+            .filter(|t| {
+                !is_external(t) && (library::is_uuid(&t.recording_mbid) || crate::covers::youtube_id(t).is_some())
+            })
             .collect();
         let total = tracks.len();
         let (mut moved, mut retagged, mut failed) = (0, 0, 0);
@@ -377,6 +380,22 @@ impl App {
         let mut folder_changes: Vec<(String, String, usize)> = vec![];
         for (i, t) in tracks.iter().enumerate() {
             progress_at(tx, i + 1, total, format!("checking {} - {}", t.artist, t.title)).await?;
+            if crate::covers::youtube_id(t).is_some() {
+                let Some(old_rel) = &t.path else { continue };
+                let ext = Path::new(old_rel).extension().and_then(|e| e.to_str()).unwrap_or("bin");
+                let new_rel = library::render_template(&cfg.path_template, t, ext)?;
+                if new_rel != Path::new(old_rel) {
+                    info(tx, format!("  {old_rel} → {}", new_rel.display())).await?;
+                    moved += 1;
+                    if !dry_run {
+                        let new_rel = library::unique(&cfg.library, &new_rel);
+                        library::move_track(&cfg.library, Path::new(old_rel), &new_rel)?;
+                        self.db().set_path(t.id, &new_rel.to_string_lossy())?;
+                        moves.insert(cfg.library.join(old_rel), cfg.library.join(&new_rel));
+                    }
+                }
+                continue;
+            }
             let r = match self.mb.recording(&t.recording_mbid).await {
                 Ok(r) => r,
                 Err(e) => {

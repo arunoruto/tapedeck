@@ -19,6 +19,17 @@ const TOKENS: &[&str] = &["artist", "album_artist", "album", "year", "track", "t
 /// Render a Lidarr-style template like `{album_artist}/{album} ({year})/{track:02} - {title}.{ext}`.
 /// Each token value is sanitized so it can never introduce a path separator.
 pub fn render_template(template: &str, t: &Track, ext: &str) -> Result<PathBuf> {
+    // No year: a bracketed year goes with its brackets ("Album (Unknown)" helps nobody); a year
+    // standing on its own (a folder) still says "Unknown".
+    let without_year;
+    let template = if t.year.is_none() {
+        without_year = [" ({year})", "({year})", " [{year}]", "[{year}]", " - {year}"]
+            .iter()
+            .fold(template.to_string(), |s, pat| s.replace(pat, ""));
+        without_year.as_str()
+    } else {
+        template
+    };
     let mut out = String::new();
     let mut rest = template;
     while let Some(start) = rest.find('{') {
@@ -205,6 +216,19 @@ pub fn move_track(library: &Path, old_rel: &Path, new_rel: &Path) -> Result<()> 
         let side = from.with_extension(ext);
         if side.is_file() {
             let _ = move_file(&side, &to.with_extension(ext));
+        }
+    }
+    // The last audio file out of a folder takes the folder's cover along (when the new folder
+    // has none), so the old folder can go.
+    if let (Some(old_dir), Some(new_dir)) = (from.parent(), to.parent())
+        && old_dir != new_dir
+        && !walk(old_dir).iter().any(|(p, ..)| p.parent() == Some(old_dir))
+    {
+        for name in crate::steam::COVER_NAMES {
+            let (src, dst) = (old_dir.join(name), new_dir.join(name));
+            if src.is_file() && !dst.exists() {
+                let _ = move_file(&src, &dst);
+            }
         }
     }
     prune(library, from.parent());
@@ -486,6 +510,46 @@ mod tests {
         remove_track(&lib, Path::new("B/New/01 - X.opus")).unwrap();
         assert!(!lib.join("B/New/01 - X.lrc").exists(), "lrc deleted along");
         let _ = std::fs::remove_dir_all(&lib);
+    }
+
+    #[test]
+    fn cover_leaves_with_the_last_track() {
+        let lib = std::env::temp_dir().join(format!("td-cover-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&lib);
+        std::fs::create_dir_all(lib.join("A/Old (Unknown)")).unwrap();
+        for f in ["01 - X.opus", "02 - Y.opus", "cover.jpg"] {
+            std::fs::write(lib.join("A/Old (Unknown)").join(f), b"x").unwrap();
+        }
+        move_track(&lib, Path::new("A/Old (Unknown)/01 - X.opus"), Path::new("A/Old/01 - X.opus")).unwrap();
+        assert!(lib.join("A/Old (Unknown)/cover.jpg").is_file(), "a track is still there: the cover stays");
+        move_track(&lib, Path::new("A/Old (Unknown)/02 - Y.opus"), Path::new("A/Old/02 - Y.opus")).unwrap();
+        assert!(lib.join("A/Old/cover.jpg").is_file(), "the last track takes it along");
+        assert!(!lib.join("A/Old (Unknown)").exists(), "and the old folder goes");
+        let _ = std::fs::remove_dir_all(&lib);
+    }
+
+    #[test]
+    fn missing_year_drops_its_brackets() {
+        let t = Track {
+            title: "T".into(),
+            album_artist: "A".into(),
+            album: "B".into(),
+            track_no: Some(1),
+            ..Default::default()
+        };
+        let r = |tpl: &str| render_template(tpl, &t, "opus").unwrap();
+        assert_eq!(r("{album_artist}/{album} ({year})/{track:02} - {title}.{ext}"), PathBuf::from("A/B/01 - T.opus"));
+        assert_eq!(r("{album_artist}/{album} [{year}]/{title}.{ext}"), PathBuf::from("A/B/T.opus"));
+        assert_eq!(
+            r("{album_artist}/{year}/{album}/{title}.{ext}"),
+            PathBuf::from("A/Unknown/B/T.opus"),
+            "a year folder stays"
+        );
+        let dated = Track { year: Some(2025), ..t.clone() };
+        assert_eq!(
+            render_template("{album} ({year})/{title}.{ext}", &dated, "opus").unwrap(),
+            PathBuf::from("B (2025)/T.opus")
+        );
     }
 
     #[test]
