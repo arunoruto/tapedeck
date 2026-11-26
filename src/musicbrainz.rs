@@ -41,11 +41,14 @@ impl MusicBrainz {
             // ponytail: MusicBrainz allows 1 req/s per client; a sleep after each call keeps us polite without a rate limiter.
             tokio::time::sleep(Duration::from_secs(1)).await;
             let status = res.status();
-            // 503 is also how MusicBrainz says "slow down"; the search endpoint does it a lot.
-            // Back off 2, 4, 8, 16, 32 s (or what Retry-After says) before giving up.
-            if (status == 503 || status == 429) && attempt < 6 {
-                let retry_after = res.headers().get("retry-after").and_then(|v| v.to_str().ok()?.parse().ok());
-                tokio::time::sleep(Duration::from_secs(retry_after.unwrap_or(1u64 << attempt).min(60))).await;
+            // 503 is how MusicBrainz says "overloaded" (its shared pool, not this client) and
+            // "slow down"; it usually clears within seconds to a minute. Back off 2, 4, 8, 16, 32,
+            // 60, 60 s, longer when Retry-After asks for it; a short Retry-After never shortens
+            // the wait, or all retries land in the same overload.
+            if (status == 503 || status == 429) && attempt < 8 {
+                let retry_after: u64 =
+                    res.headers().get("retry-after").and_then(|v| v.to_str().ok()?.parse().ok()).unwrap_or(0);
+                tokio::time::sleep(Duration::from_secs(backoff(attempt, retry_after))).await;
                 continue;
             }
             return Ok(res.error_for_status().with_context(|| format!("musicbrainz {what}"))?.json().await?);
@@ -122,6 +125,12 @@ impl MusicBrainz {
         let url = format!("{API}/recording/?query={}&limit=100&fmt=json", urlencoding::encode(&q));
         self.get(&url, &format!("search {artist} - {title}")).await
     }
+}
+
+/// Seconds to wait before retry number `attempt` (from 1): doubling from 2 s, capped at 60 s,
+/// and never less than the server's Retry-After (capped at 5 min).
+fn backoff(attempt: u32, retry_after: u64) -> u64 {
+    (1u64 << attempt.min(6)).min(60).max(retry_after.min(300))
 }
 
 fn lucene(s: &str) -> String {
@@ -538,6 +547,14 @@ mod tests {
             ("b", "Glupost", "Poslednji Album", Some(202_000))
         );
         assert_eq!(tracks[1].artist, "S.A.R.S.");
+    }
+
+    #[test]
+    fn backoff_grows_and_respects_retry_after() {
+        let waits: Vec<u64> = (1..8).map(|a| backoff(a, 1)).collect();
+        assert_eq!(waits, [2, 4, 8, 16, 32, 60, 60], "Retry-After: 1 does not shorten it");
+        assert_eq!(backoff(1, 20), 20, "a longer Retry-After wins");
+        assert_eq!(backoff(1, 3600), 300);
     }
 
     #[test]

@@ -374,6 +374,7 @@ impl App {
             .collect();
         let total = tracks.len();
         let (mut moved, mut retagged, mut failed) = (0, 0, 0);
+        let (mut in_a_row, mut stopped) = (0, false);
         let mut moves: HashMap<PathBuf, PathBuf> = HashMap::new();
         // Artist folders that change, old → new, with a track count: the thing to review before
         // a real run (a MusicBrainz rename, or a pin set or lifted).
@@ -397,10 +398,28 @@ impl App {
                 continue;
             }
             let r = match self.mb.recording(&t.recording_mbid).await {
-                Ok(r) => r,
+                Ok(r) => {
+                    in_a_row = 0;
+                    r
+                }
                 Err(e) => {
                     info(tx, format!("skipping {} - {}: {e:#}", t.artist, t.title)).await?;
                     failed += 1;
+                    in_a_row += 1;
+                    // Each of these already waited out minutes of retries: MusicBrainz is down,
+                    // not one recording missing. Stop instead of skipping through the rest.
+                    if in_a_row >= 10 {
+                        info(
+                            tx,
+                            format!(
+                                "MusicBrainz looks down (10 lookups in a row failed); stopped after {}/{total}",
+                                i + 1
+                            ),
+                        )
+                        .await?;
+                        stopped = true;
+                        break;
+                    }
                     continue;
                 }
             };
@@ -462,7 +481,11 @@ impl App {
         }
         let retag = if dry_run { String::new() } else { format!(", {retagged} retagged") };
         info(tx, format!("{total} tracks checked, {moved} {verb}{retag}, {failed} failed")).await?;
-        ensure!(failed == 0, "{failed} MusicBrainz lookups failed; run again later");
+        ensure!(
+            failed == 0 && !stopped,
+            "{failed} tracks skipped (MusicBrainz unavailable){}; run `td refile` again to finish them",
+            if stopped { ", the rest not checked" } else { "" }
+        );
         Ok(())
     }
 
